@@ -346,6 +346,11 @@ class ModelConfig:
             legacy configurations this defaults to ``max_input_tokens``.
         max_output_tokens: Maximum generated/output tokens (0 = unknown). This
             is metadata unless a host explicitly configures ``max_tokens``.
+        api_mode: OpenAI-compatible generation API selection. Defaults to
+            Chat Completions; set ``"responses"`` to use ``/v1/responses``.
+        api_fallback: Optional protocol fallback. ``"chat_completions"`` retries
+            a Responses request only when the provider clearly reports that the
+            Responses endpoint or model is unsupported. Defaults to ``"none"``.
         native_tool_search: Enable provider-hosted tool search for this model.
             Supported for OpenAI Responses and Anthropic Messages models whose
             provider endpoint implements the corresponding native protocol.
@@ -359,6 +364,8 @@ class ModelConfig:
     max_input_tokens: int = 0
     context_window: int = 0
     max_output_tokens: int = 0
+    api_mode: Literal["chat_completions", "responses"] = "chat_completions"
+    api_fallback: Literal["none", "chat_completions"] = "none"
     native_tool_search: bool = False
     capabilities: tuple[str, ...] = ()
 
@@ -371,6 +378,14 @@ class ModelConfig:
             raise ValueError(f"ModelConfig({self.id}).input must list at least one modality")
         if self.max_input_tokens < 0 or self.context_window < 0 or self.max_output_tokens < 0:
             raise ValueError(f"ModelConfig({self.id}) token limits must be non-negative")
+        if self.api_mode not in ("chat_completions", "responses"):
+            raise ValueError(f"ModelConfig({self.id}).api_mode is invalid: {self.api_mode!r}")
+        if self.api_fallback not in ("none", "chat_completions"):
+            raise ValueError(f"ModelConfig({self.id}).api_fallback is invalid: {self.api_fallback!r}")
+        if self.api_fallback != "none" and self.api_mode != "responses":
+            raise ValueError(f"ModelConfig({self.id}).api_fallback requires api_mode='responses'")
+        if self.api_fallback != "none" and self.native_tool_search:
+            raise ValueError(f"ModelConfig({self.id}).api_fallback is incompatible with native_tool_search")
         if self.max_input_tokens <= 0 < self.context_window:
             object.__setattr__(self, "max_input_tokens", self.context_window)
         if self.context_window <= 0 < self.max_input_tokens:
@@ -410,6 +425,8 @@ class ModelConfig:
             "max_input_tokens": self.max_input_tokens,
             "context_window": self.effective_context_window,
             "max_output_tokens": self.max_output_tokens,
+            "api_mode": self.api_mode,
+            "api_fallback": self.api_fallback,
             "native_tool_search": self.native_tool_search,
             "capabilities": list(self.capabilities),
         }
@@ -436,6 +453,8 @@ class ModelConfig:
             max_input_tokens=max_input,
             context_window=context_window,
             max_output_tokens=int(data.get("max_output_tokens") or 0),
+            api_mode=data.get("api_mode", "chat_completions"),
+            api_fallback=data.get("api_fallback", "none"),
             native_tool_search=bool(data.get("native_tool_search", False)),
             capabilities=tuple(str(x) for x in (data.get("capabilities") or ())),
         )

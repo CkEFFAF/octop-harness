@@ -106,6 +106,18 @@ class TestModelConfigSerialization:
         model = ModelConfig(id="tool-search", native_tool_search=True)
         assert ModelConfig.from_dict(model.to_dict()).native_tool_search is True
 
+    def test_round_trip_preserves_api_mode(self) -> None:
+        model = ModelConfig(id="responses-model", api_mode="responses")
+        assert ModelConfig.from_dict(model.to_dict()).api_mode == "responses"
+
+    def test_round_trip_preserves_api_fallback(self) -> None:
+        model = ModelConfig(
+            id="responses-model",
+            api_mode="responses",
+            api_fallback="chat_completions",
+        )
+        assert ModelConfig.from_dict(model.to_dict()).api_fallback == "chat_completions"
+
 
 class TestProviderConfigSerialization:
     def test_round_trip(self) -> None:

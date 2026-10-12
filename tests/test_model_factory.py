@@ -11,6 +11,7 @@ from octop_harness.config import ModelConfig, ProviderConfig
 from octop_harness.llm.factory import (
     ChatModelFactory,
     _get_reasoning_aware_chat_openai,
+    _is_responses_api_unsupported_error,
     build_chat_model,
 )
 
@@ -43,6 +44,8 @@ class TestBuildChatModel:
         # so the factory must pass it explicitly or streamed responses carry
         # no usage_metadata.
         assert kwargs["stream_usage"] is True
+        assert kwargs["use_responses_api"] is False
+        assert "output_version" not in kwargs
 
     def test_openai_protocol_stream_usage_opt_out(self) -> None:
         provider = ProviderConfig(
@@ -67,7 +70,7 @@ class TestBuildChatModel:
             api_key="sk-x",
             protocol="openai",
         )
-        model = ModelConfig(id="gpt-tool-search", native_tool_search=True)
+        model = ModelConfig(id="gpt-tool-search", api_mode="responses", native_tool_search=True)
         from langchain_openai import ChatOpenAI
 
         cls = _get_reasoning_aware_chat_openai(ChatOpenAI)
@@ -79,6 +82,55 @@ class TestBuildChatModel:
         assert kwargs["output_version"] == "responses/v1"
         assert instance._harness_native_tool_search is True
         assert instance._harness_tool_search_provider == "openai"
+
+    @pytest.mark.parametrize(
+        ("api_mode", "expected"),
+        [("responses", True), ("chat_completions", False)],
+    )
+    def test_openai_explicit_api_mode_overrides_endpoint(self, api_mode: str, expected: bool) -> None:
+        provider = ProviderConfig(
+            id="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-x",
+            protocol="openai",
+        )
+        model = ModelConfig(id="gpt-X", api_mode=api_mode)  # type: ignore[arg-type]
+        from langchain_openai import ChatOpenAI
+
+        cls = _get_reasoning_aware_chat_openai(ChatOpenAI)
+        with patch.object(cls, "__init__", return_value=None) as mock_init:
+            build_chat_model(provider, model)
+
+        assert mock_init.call_args.kwargs["use_responses_api"] is expected
+
+    def test_openai_native_tool_search_rejects_chat_completions(self) -> None:
+        provider = ProviderConfig(id="openai", base_url="https://api.example.com/v1", api_key="sk-x")
+        model = ModelConfig(id="gpt-X", api_mode="chat_completions", native_tool_search=True)
+
+        with pytest.raises(ValueError, match="native_tool_search requires api_mode='responses'"):
+            build_chat_model(provider, model)
+
+    def test_openai_responses_fallback_builds_chat_completions_model(self) -> None:
+        provider = ProviderConfig(id="openai", base_url="https://api.example.com/v1", api_key="sk-x")
+        model = ModelConfig(
+            id="gpt-X",
+            api_mode="responses",
+            api_fallback="chat_completions",
+        )
+        from langchain_openai import ChatOpenAI
+
+        cls = _get_reasoning_aware_chat_openai(ChatOpenAI)
+        with patch.object(cls, "__init__", return_value=None) as mock_init:
+            instance = build_chat_model(provider, model)
+
+        assert mock_init.call_count == 2
+        primary_kwargs = mock_init.call_args_list[0].kwargs
+        fallback_kwargs = mock_init.call_args_list[1].kwargs
+        assert primary_kwargs["use_responses_api"] is True
+        assert primary_kwargs["output_version"] == "responses/v1"
+        assert fallback_kwargs["use_responses_api"] is False
+        assert "output_version" not in fallback_kwargs
+        assert instance._harness_api_fallback_model is not None
 
     def test_openai_profile_includes_distinct_context_limits(self) -> None:
         provider = ProviderConfig(
@@ -325,3 +377,148 @@ class TestReasoningContentRoundTrip:
         second = _get_reasoning_aware_chat_openai(ChatOpenAI)
         assert first is second
         assert issubclass(first, ChatOpenAI)
+
+
+class TestResponsesApiFallback:
+    class UnsupportedEndpointError(Exception):
+        status_code = 404
+        body = {"error": {"message": "Not Found"}}
+
+    def _build(self) -> Any:
+        provider = ProviderConfig(
+            id="example",
+            base_url="https://api.example.com/v1",
+            api_key="sk-x",
+            protocol="openai",
+        )
+        model = ModelConfig(
+            id="responses-model",
+            api_mode="responses",
+            api_fallback="chat_completions",
+        )
+        return build_chat_model(provider, model)
+
+    @pytest.mark.parametrize("status_code", [404, 405, 501])
+    def test_endpoint_status_is_eligible(self, status_code: int) -> None:
+        exc = self.UnsupportedEndpointError()
+        exc.status_code = status_code
+        assert _is_responses_api_unsupported_error(exc) is True
+
+    @pytest.mark.parametrize("status_code", [401, 403, 429, 500, 503])
+    def test_operational_error_is_not_eligible(self, status_code: int) -> None:
+        exc = self.UnsupportedEndpointError()
+        exc.status_code = status_code
+        assert _is_responses_api_unsupported_error(exc) is False
+
+    def test_explicit_unsupported_400_is_eligible(self) -> None:
+        exc = self.UnsupportedEndpointError("This model does not support Responses API")
+        exc.status_code = 400
+        assert _is_responses_api_unsupported_error(exc) is True
+
+    def test_generic_400_is_not_eligible(self) -> None:
+        exc = self.UnsupportedEndpointError("invalid tool schema")
+        exc.status_code = 400
+        exc.body = {"error": {"message": "invalid tool schema"}}
+        assert _is_responses_api_unsupported_error(exc) is False
+
+    def test_non_streaming_call_falls_back_and_marks_result(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_openai import ChatOpenAI
+
+        instance = self._build()
+        expected = ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+        with patch.object(
+            ChatOpenAI,
+            "_generate",
+            side_effect=[self.UnsupportedEndpointError(), expected],
+        ) as generate:
+            result = instance._generate([HumanMessage(content="ping")])
+
+        assert generate.call_count == 2
+        assert result.generations[0].message.response_metadata["api_fallback"] == "chat_completions"
+
+    @pytest.mark.asyncio
+    async def test_async_non_streaming_call_falls_back_and_marks_result(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_openai import ChatOpenAI
+
+        instance = self._build()
+        expected = ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+        calls = 0
+
+        async def fake_agenerate(_model: Any, *_args: Any, **_kwargs: Any) -> ChatResult:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise self.UnsupportedEndpointError()
+            return expected
+
+        with patch.object(ChatOpenAI, "_agenerate", new=fake_agenerate):
+            result = await instance._agenerate([HumanMessage(content="ping")])
+
+        assert calls == 2
+        assert result.generations[0].message.response_metadata["api_fallback"] == "chat_completions"
+
+    def test_responses_only_request_option_disables_fallback(self) -> None:
+        from langchain_core.messages import HumanMessage
+        from langchain_openai import ChatOpenAI
+
+        instance = self._build()
+        with (
+            patch.object(
+                ChatOpenAI,
+                "_generate",
+                side_effect=self.UnsupportedEndpointError(),
+            ) as generate,
+            pytest.raises(self.UnsupportedEndpointError),
+        ):
+            instance._generate(
+                [HumanMessage(content="ping")],
+                previous_response_id="resp_123",
+            )
+
+        assert generate.call_count == 1
+
+    def test_stream_falls_back_only_before_first_chunk(self) -> None:
+        from langchain_core.messages import AIMessageChunk, HumanMessage
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openai import ChatOpenAI
+
+        instance = self._build()
+
+        def fake_stream(model: Any, *_args: Any, **_kwargs: Any) -> Any:
+            if model.use_responses_api:
+                raise self.UnsupportedEndpointError()
+            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+
+        with patch.object(ChatOpenAI, "_stream", new=fake_stream):
+            chunks = list(instance._stream([HumanMessage(content="ping")]))
+
+        assert len(chunks) == 1
+        assert chunks[0].message.response_metadata["api_fallback"] == "chat_completions"
+
+    def test_stream_does_not_fallback_after_first_chunk(self) -> None:
+        from langchain_core.messages import AIMessageChunk, HumanMessage
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openai import ChatOpenAI
+
+        instance = self._build()
+        fallback_calls = 0
+
+        def fake_stream(model: Any, *_args: Any, **_kwargs: Any) -> Any:
+            nonlocal fallback_calls
+            if model.use_responses_api:
+                yield ChatGenerationChunk(message=AIMessageChunk(content="partial"))
+                raise self.UnsupportedEndpointError()
+            fallback_calls += 1
+            yield ChatGenerationChunk(message=AIMessageChunk(content="duplicate"))
+
+        with (
+            patch.object(ChatOpenAI, "_stream", new=fake_stream),
+            pytest.raises(self.UnsupportedEndpointError),
+        ):
+            list(instance._stream([HumanMessage(content="ping")]))
+
+        assert fallback_calls == 0

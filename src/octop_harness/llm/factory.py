@@ -28,7 +28,9 @@ emit the field, so it's always-on for ``protocol="openai"``.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable, Mapping, Sequence
+import json
+import logging
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from octop_harness.config import ModelConfig, ProviderConfig
@@ -47,6 +49,9 @@ if TYPE_CHECKING:
     from octop_harness.config import HarnessAgentConfig
     from octop_harness.llm.access import ModelAccess
     from octop_harness.protocols.base import ChatProtocol
+
+
+logger = logging.getLogger(__name__)
 
 
 class ChatModelFactory:
@@ -266,11 +271,11 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         # off and streamed AIMessages carry no usage_metadata.
         "stream_usage": provider.stream_usage,
     }
-    if model.native_tool_search:
-        # OpenAI hosted tool search is a Responses API capability. Keep
-        # Chat Completions as the default for OpenAI-compatible endpoints
-        # that do not explicitly advertise it.
-        kwargs["use_responses_api"] = True
+    use_responses_api = model.api_mode == "responses"
+    if model.native_tool_search and not use_responses_api:
+        raise ValueError("OpenAI native_tool_search requires api_mode='responses'")
+    kwargs["use_responses_api"] = use_responses_api
+    if use_responses_api:
         kwargs["output_version"] = "responses/v1"
     if provider.headers:
         kwargs["default_headers"] = dict(provider.headers)
@@ -281,11 +286,22 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         session_clients = session_http_clients(provider.session_header)
         kwargs["http_client"], kwargs["http_async_client"] = session_clients
     instance: BaseChatModel = cls(**kwargs)
+    fallback_instance: BaseChatModel | None = None
+    if model.api_fallback == "chat_completions":
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs["use_responses_api"] = False
+        fallback_kwargs.pop("output_version", None)
+        fallback_instance = cls(**fallback_kwargs)
+        object.__setattr__(instance, "_harness_api_fallback_model", fallback_instance)
+        object.__setattr__(instance, "_harness_api_fallback_provider", provider.id)
+        object.__setattr__(instance, "_harness_api_fallback_model_id", model.id)
     if session_clients is not None:
         attach_session_http_clients(instance, session_clients[0], session_clients[1])
     # Attach supported input modalities so the subclass can strip
     # unsupported content types (e.g. image_url for text-only models).
     instance._harness_supported_input = set(model.input)  # type: ignore[attr-defined]
+    if fallback_instance is not None:
+        fallback_instance._harness_supported_input = set(model.input)  # type: ignore[attr-defined]
     _stamp_native_tool_search_capability(instance, provider.protocol, model.native_tool_search)
     _inject_model_token_limits(instance, model)
     return instance
@@ -300,6 +316,89 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
 # Keyed on the base class identity so test patches that swap ``ChatOpenAI`` for
 # a mock don't poison the cache for subsequent real-class lookups.
 _REASONING_AWARE_CHAT_OPENAI: dict[int, type[Any]] = {}
+
+_RESPONSES_UNSUPPORTED_400_MARKERS: tuple[str, ...] = (
+    "responses api is not supported",
+    "response api is not supported",
+    "does not support responses",
+    "doesn't support responses",
+    "not support responses",
+    "unsupported responses",
+    "unsupported endpoint",
+    "unknown endpoint",
+    "unsupported api mode",
+)
+_RESPONSES_ONLY_REQUEST_KEYS: frozenset[str] = frozenset(
+    {
+        "background",
+        "context_management",
+        "conversation",
+        "include",
+        "max_tool_calls",
+        "previous_response_id",
+        "prompt",
+        "reasoning",
+        "text",
+        "truncation",
+    }
+)
+
+
+def _is_responses_api_unsupported_error(exc: BaseException) -> bool:
+    """Return whether an error clearly means the Responses API is unavailable."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code in (404, 405, 501):
+        return True
+    if status_code != 400:
+        return False
+    body = getattr(exc, "body", None)
+    try:
+        body_text = json.dumps(body, ensure_ascii=False) if body is not None else ""
+    except (TypeError, ValueError):
+        body_text = str(body)
+    error_text = f"{exc} {body_text}".lower()
+    return any(marker in error_text for marker in _RESPONSES_UNSUPPORTED_400_MARKERS)
+
+
+def _request_allows_chat_completions_fallback(kwargs: Mapping[str, Any]) -> bool:
+    if _RESPONSES_ONLY_REQUEST_KEYS.intersection(kwargs):
+        return False
+    tools = kwargs.get("tools")
+    if not isinstance(tools, list):
+        return True
+    return all(not isinstance(tool, dict) or tool.get("type", "function") == "function" for tool in tools)
+
+
+def _mark_api_fallback_message(message: Any) -> None:
+    metadata = getattr(message, "response_metadata", None)
+    if isinstance(metadata, dict):
+        metadata["api_fallback"] = "chat_completions"
+        metadata["api_mode"] = "chat_completions"
+
+
+def _mark_api_fallback_result(result: Any) -> Any:
+    for generation in getattr(result, "generations", ()):
+        _mark_api_fallback_message(getattr(generation, "message", None))
+    return result
+
+
+def _mark_api_fallback_chunk(chunk: Any) -> Any:
+    _mark_api_fallback_message(getattr(chunk, "message", None))
+    return chunk
+
+
+def _fallback_model_for(instance: Any, exc: BaseException, kwargs: Mapping[str, Any]) -> Any | None:
+    fallback = getattr(instance, "_harness_api_fallback_model", None)
+    if fallback is None or not _request_allows_chat_completions_fallback(kwargs):
+        return None
+    if not _is_responses_api_unsupported_error(exc):
+        return None
+    logger.warning(
+        "Responses API unsupported for provider=%s model=%s; retrying with Chat Completions",
+        getattr(instance, "_harness_api_fallback_provider", "?"),
+        getattr(instance, "_harness_api_fallback_model_id", "?"),
+    )
+    return fallback
 
 
 def _copy_reasoning_from_response(result: Any, response: Any) -> Any:
@@ -414,6 +513,50 @@ def _get_reasoning_aware_chat_openai(base_cls: type[Any]) -> type[Any]:
 
     class _ReasoningAwareChatOpenAI(base_cls):  # type: ignore[misc]
         """ChatOpenAI subclass that round-trips ``reasoning_content``."""
+
+        def _generate(self, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return super()._generate(*args, **kwargs)
+            except Exception as exc:
+                fallback = _fallback_model_for(self, exc, kwargs)
+                if fallback is None:
+                    raise
+                return _mark_api_fallback_result(fallback._generate(*args, **kwargs))
+
+        async def _agenerate(self, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return await super()._agenerate(*args, **kwargs)
+            except Exception as exc:
+                fallback = _fallback_model_for(self, exc, kwargs)
+                if fallback is None:
+                    raise
+                return _mark_api_fallback_result(await fallback._agenerate(*args, **kwargs))
+
+        def _stream(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
+            yielded = False
+            try:
+                for chunk in super()._stream(*args, **kwargs):
+                    yielded = True
+                    yield chunk
+            except Exception as exc:
+                fallback = None if yielded else _fallback_model_for(self, exc, kwargs)
+                if fallback is None:
+                    raise
+                for chunk in fallback._stream(*args, **kwargs):
+                    yield _mark_api_fallback_chunk(chunk)
+
+        async def _astream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+            yielded = False
+            try:
+                async for chunk in super()._astream(*args, **kwargs):
+                    yielded = True
+                    yield chunk
+            except Exception as exc:
+                fallback = None if yielded else _fallback_model_for(self, exc, kwargs)
+                if fallback is None:
+                    raise
+                async for chunk in fallback._astream(*args, **kwargs):
+                    yield _mark_api_fallback_chunk(chunk)
 
         def _create_chat_result(self, response: Any, generation_info: dict[str, Any] | None = None) -> Any:
             return _copy_reasoning_from_response(super()._create_chat_result(response, generation_info), response)

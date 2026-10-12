@@ -259,6 +259,15 @@ requires `ModelConfig.native_tool_search=True`; unsupported routed models use
 the configured `tool_search_fallback`. Set the mode to `eager` to disable
 progressive loading.
 
+For OpenAI-compatible providers, each model can set `api_mode` to
+`"chat_completions"` (default) or `"responses"`. The choice is explicit for
+official and compatible endpoints alike. Native OpenAI tool search requires
+Responses. Models using Responses may also opt in to
+`api_fallback="chat_completions"`. The fallback is disabled by default and is
+used only for clear unsupported-endpoint/model errors, before any streamed
+output. It does not apply to native tool search or other Responses-only request
+features, and never masks authentication, rate-limit, timeout, or server errors.
+
 ## Documentation
 
 - [What is Octop Harness?](#what-is-octop-harness)
