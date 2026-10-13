@@ -173,10 +173,13 @@ class TestCoreProviderPresets:
         with pytest.raises(ValueError, match=r"invalid input modality 'smell'"):
             load_provider_templates(templates_path=custom)
 
-    def test_deepseek_bundle_only_lists_current_v4_models(self) -> None:
+    def test_deepseek_bundle_uses_official_v41_route_and_keeps_aliases(self) -> None:
         presets = {p.id: p for p in load_provider_templates(templates_path=_BUNDLED_TEMPLATE)}
         ds = presets["deepseek"]
-        assert {m.id for m in ds.models} == {"deepseek-v4-flash", "deepseek-v4-pro"}
+        models = {m.id: m for m in ds.models}
+        assert set(models) == {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"}
+        assert models["deepseek-flash"].name == "DeepSeek V4.1 Flash"
+        assert models["deepseek-flash"].input == ("text", "image")
         assert {m.max_input_tokens for m in ds.models} == {1_000_000}
         assert {m.max_output_tokens for m in ds.models} == {384_000}
 
@@ -365,15 +368,21 @@ class TestCoreProviderPresets:
 
         go_oai = presets["opencode-go-openai"]
         assert go_oai.protocol == "openai"
-        assert go_oai.base_url == "https://opencode.ai/zen/go/v1"
+        assert go_oai.base_url == "https://opencode.ai/inference/go/v1"
         assert go_oai.variant == "go_compatible"
         assert any(m.id == "deepseek-v4-flash" for m in go_oai.models)
+        assert {"deepseek-v4.1-flash", "grok-4.7", "glm-5.3", "gpt-6-luna"} <= {m.id for m in go_oai.models}
+        # The discovery endpoint does not publish context limits for these IDs.
+        assert next(m for m in go_oai.models if m.id == "grok-4.7").context_window == 0
+        assert next(m for m in go_oai.models if m.id == "grok-4.7").use_responses_api is True
+        assert next(m for m in go_oai.models if m.id == "deepseek-v4.1-flash").use_responses_api is False
 
         go_ant = presets["opencode-go-anthropic"]
         assert go_ant.protocol == "anthropic"
-        assert go_ant.base_url == "https://opencode.ai/zen/go"
+        assert go_ant.base_url == "https://opencode.ai/inference/go"
         assert go_ant.variant == "go_anthropic"
         assert any(m.id == "minimax-m3" for m in go_ant.models)
+        assert {"claude-haiku-5-5", "qwen3.8-max"} <= {m.id for m in go_ant.models}
 
 
 class TestProviderPresetPublicExport:

@@ -3,6 +3,10 @@
   <h1>Octop Harness</h1>
 </div>
 
+OpenAI models that require Responses can set `ModelConfig(use_responses_api=True)`.
+Chat Completions remains the default, and this setting does not enable hosted tool
+search. OpenCode Go presets carry the appropriate per-model value.
+
 <p align="center">
   <strong>A production-grade agent runtime engineered from the Harness Engineering philosophy.</strong>
 </p>

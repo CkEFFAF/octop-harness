@@ -349,6 +349,8 @@ class ModelConfig:
         native_tool_search: Enable provider-hosted tool search for this model.
             Supported for OpenAI Responses and Anthropic Messages models whose
             provider endpoint implements the corresponding native protocol.
+        use_responses_api: Select Responses for OpenAI-protocol models whose
+            endpoint requires it; defaults to Chat Completions.
     """
 
     id: str
@@ -360,6 +362,7 @@ class ModelConfig:
     context_window: int = 0
     max_output_tokens: int = 0
     native_tool_search: bool = False
+    use_responses_api: bool = False
     capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -411,6 +414,7 @@ class ModelConfig:
             "context_window": self.effective_context_window,
             "max_output_tokens": self.max_output_tokens,
             "native_tool_search": self.native_tool_search,
+            "use_responses_api": self.use_responses_api,
             "capabilities": list(self.capabilities),
         }
 
@@ -437,6 +441,7 @@ class ModelConfig:
             context_window=context_window,
             max_output_tokens=int(data.get("max_output_tokens") or 0),
             native_tool_search=bool(data.get("native_tool_search", False)),
+            use_responses_api=bool(data.get("use_responses_api", False)),
             capabilities=tuple(str(x) for x in (data.get("capabilities") or ())),
         )
 

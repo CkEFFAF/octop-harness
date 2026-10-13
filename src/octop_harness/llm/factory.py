@@ -266,8 +266,8 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         # off and streamed AIMessages carry no usage_metadata.
         "stream_usage": provider.stream_usage,
     }
-    if model.native_tool_search:
-        # OpenAI hosted tool search is a Responses API capability. Keep
+    if model.native_tool_search or model.use_responses_api:
+        # OpenAI hosted tool search and explicit Responses-only routes. Keep
         # Chat Completions as the default for OpenAI-compatible endpoints
         # that do not explicitly advertise it.
         kwargs["use_responses_api"] = True

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2.post1] - 2026-10-13
+
+### 修复
+
+- DeepSeek 预置增加 V4.1 Flash 的官方 `deepseek-flash` 路由及图片输入，保留 V4 Flash 兼容别名。
+- OpenCode Go 预置按官方模型接口刷新，新增 V4.1 Flash、Grok 4.6/4.7、GLM 5.3、Luna、MiMo V2.6、Claude Haiku 5.5 和 Qwen 3.8；未确认的上下文/输出上限保持未知。
+- Fork 发版只发布 GitHub 安装包；PyPI 发布保留给上游仓库。
+- OpenCode Go 的 Grok/Luna/Muse 路由显式使用 Responses API，其他兼容模型继续使用 Chat Completions；测试连接和聊天共享该模型配置。
+
 ## [1.0.2] - 2026-10-09
 
 ### 修复
