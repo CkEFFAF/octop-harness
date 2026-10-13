@@ -21,6 +21,8 @@ def serialize_model_preset(model: ModelPreset) -> dict[str, Any]:
         entry["input"] = list(model.input)
     if model.reasoning:
         entry["reasoning"] = True
+    if model.use_responses_api:
+        entry["use_responses_api"] = True
     return entry
 
 

@@ -55,6 +55,7 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
+    if: github.repository == 'TencentCloud/octop-harness'
     environment: pypi
     steps:
       - name: Download distributions
@@ -70,7 +71,8 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: publish
+    needs: [build, publish]
+    if: always() && needs.build.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -125,6 +127,7 @@ jobs:
     name: Trigger sync main into develop
     needs: github-release
     runs-on: ubuntu-latest
+    if: github.repository == 'TencentCloud/octop-harness'
     steps:
       - name: Dispatch Sync Main Into Develop
         env:

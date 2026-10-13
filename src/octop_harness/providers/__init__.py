@@ -36,6 +36,7 @@ class ModelPreset:
         max_output_tokens: Maximum generated/output tokens (0 = unknown).
         input: Modalities the model accepts (e.g. ``("text", "image")``).
         reasoning: When ``True``, the model is a reasoning / extended-thinking model.
+        use_responses_api: Use Responses instead of Chat Completions for OpenAI.
     """
 
     id: str
@@ -45,6 +46,7 @@ class ModelPreset:
     reasoning: bool = False
     context_window: int = 0
     max_output_tokens: int = 0
+    use_responses_api: bool = False
 
     def __post_init__(self) -> None:
         if self.max_input_tokens < 0 or self.context_window < 0 or self.max_output_tokens < 0:
@@ -140,6 +142,7 @@ def _parse_presets(data: list[dict[str, object]]) -> list[ProviderPreset]:
                         reasoning=_parse_model_reasoning(m.get("reasoning")),
                         context_window=context_window,
                         max_output_tokens=int(m.get("max_output_tokens", 0)),
+                        use_responses_api=bool(m.get("use_responses_api", False)),
                     )
                 )
             out.append(

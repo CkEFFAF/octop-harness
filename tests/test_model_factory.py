@@ -16,6 +16,20 @@ from octop_harness.llm.factory import (
 
 
 class TestBuildChatModel:
+    def test_responses_only_model_uses_responses_without_enabling_tool_search(self) -> None:
+        provider = ProviderConfig(id="go", base_url="https://opencode.ai/inference/go/v1", api_key="sk-x")
+        model = ModelConfig.from_dict({"id": "grok-4.7", "use_responses_api": True})
+        assert ModelConfig.from_dict(model.to_dict()).use_responses_api is True
+        assert ModelConfig.from_dict({"id": "deepseek-flash"}).use_responses_api is False
+        from langchain_openai import ChatOpenAI
+
+        cls = _get_reasoning_aware_chat_openai(ChatOpenAI)
+        with patch.object(cls, "__init__", return_value=None) as mock_init:
+            instance = build_chat_model(provider, model)
+        assert mock_init.call_args.kwargs["use_responses_api"] is True
+        assert mock_init.call_args.kwargs["output_version"] == "responses/v1"
+        assert instance._harness_native_tool_search is False
+
     def test_openai_protocol_invokes_chat_openai(self) -> None:
         provider = ProviderConfig(
             id="example",
