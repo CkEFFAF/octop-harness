@@ -59,7 +59,7 @@ def format_close_response(*, runner_name: str, closed: bool) -> str:
 def format_final_response(
     *,
     runner_name: str,
-    execution_cwd: Path,
+    execution_cwd: Path | str,
     final_event: dict[str, Any] | None,
 ) -> str:
     header = f"runner: {runner_name} working directory: {execution_cwd}"

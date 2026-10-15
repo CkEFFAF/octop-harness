@@ -161,11 +161,12 @@ class TestSendFileToUser:
         assert block["path"] == "workspace/Sapiens.pptx"
         assert block["source"]["url"] == real.resolve().as_uri()
         from urllib.parse import urlparse
+        from urllib.request import url2pathname
 
         parsed = urlparse(block["source"]["url"])
         assert parsed.scheme == "file"
         assert parsed.netloc in ("", "localhost")
-        assert Path(parsed.path).resolve() == real.resolve()
+        assert Path(url2pathname(parsed.path)).resolve() == real.resolve()
 
     def test_bound_tool_missing_relative_skips_process_cwd(
         self,
@@ -230,7 +231,7 @@ class TestSendFileToUser:
         assert block["path"] == hostish
         # ``path`` keeps the caller key; ``url`` is the materialized on-disk URI.
         assert block["source"]["url"] == nest.resolve().as_uri()
-        assert Path(hostish).as_uri() != block["source"]["url"]
+        assert Path(hostish).resolve().as_uri() != block["source"]["url"]
 
 
 class TestDesktopScreenshot:

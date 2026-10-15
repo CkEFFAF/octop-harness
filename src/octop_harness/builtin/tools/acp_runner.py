@@ -56,7 +56,7 @@ def build_acp_runner_tool(*, service_key: str, config: ACPConfig, workspace_dir:
         action_name = str(action or "").strip().lower()
         runner_name = str(runner or "").strip()
         message_text = str(message or "")
-        execution_cwd = _resolve_execution_cwd(cwd, workspace_dir)
+        execution_cwd = _get_service(service_key, config).resolve_cwd(cwd, workspace_dir)
 
         validation_error = _validate_action_inputs(
             action_name=action_name,
@@ -220,7 +220,7 @@ async def _run_streaming_action(
     action_name: str,
     runner_name: str,
     message_text: str,
-    execution_cwd: Path,
+    execution_cwd: Path | str,
     timeout_seconds: float | None,
 ) -> str:
     if runner_name not in config.runners or not config.runners[runner_name].enabled:

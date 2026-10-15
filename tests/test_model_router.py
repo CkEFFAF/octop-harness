@@ -7,7 +7,7 @@ runtime.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -42,6 +42,10 @@ class FakeModelRequest:
     model: Any = None
     state: dict[str, Any] = None  # type: ignore[assignment]
     runtime: FakeRuntime | None = None
+
+    def override(self, **values: Any) -> FakeModelRequest:
+        """Match the public ModelRequest override protocol used by middleware."""
+        return replace(self, **values)
 
 
 @pytest.fixture
@@ -101,7 +105,7 @@ class TestPriorityChain:
             messages=[HumanMessage(content="hi")],
             runtime=FakeRuntime(config={"configurable": {"model": "p/fast"}}),
         )
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         assert req.model is sentinels["p/fast"]
 
     def test_user_selector_used_when_no_explicit(
@@ -122,7 +126,7 @@ class TestPriorityChain:
             messages=[HumanMessage(content="hi")],
             runtime=FakeRuntime(config={"configurable": {}}),
         )
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         assert req.model is sentinels["p/fast"]
 
     def test_user_selector_returning_none_falls_through(
@@ -143,7 +147,7 @@ class TestPriorityChain:
             messages=[HumanMessage(content="hi")],
             runtime=FakeRuntime(config={"configurable": {}}),
         )
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         # No multimodal content → default
         assert req.model is sentinels["p/text"]
         assert req.runtime.config["configurable"]["model"] == "p/text"
@@ -166,7 +170,7 @@ class TestPriorityChain:
             ],
             runtime=FakeRuntime(config={"configurable": {}}),
         )
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         assert req.model is sentinels["p/vision"]
 
     def test_text_only_uses_default(
@@ -180,7 +184,7 @@ class TestPriorityChain:
             messages=[HumanMessage(content="hi")],
             runtime=FakeRuntime(config={"configurable": {}}),
         )
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         assert req.model is sentinels["p/text"]
 
     def test_no_runtime_falls_back_to_default(
@@ -191,7 +195,7 @@ class TestPriorityChain:
         factory, sentinels = factory_with_sentinels
         mw = ModelRouterMiddleware(cfg, factory)
         req = FakeModelRequest(messages=[HumanMessage(content="hi")], runtime=None)
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         assert req.model is sentinels["p/text"]
 
     def test_multimodal_fallback_when_no_multimodal_configured(
@@ -221,7 +225,7 @@ class TestPriorityChain:
             ],
             runtime=FakeRuntime(config={"configurable": {}}),
         )
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         # No multimodal model available → default.
         assert req.model is sentinel
 
@@ -247,7 +251,7 @@ class TestPriorityChain:
             messages=[HumanMessage(content="hi")],
             runtime=FakeRuntime(config={"configurable": {}}),
         )
-        mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
+        req = mw.wrap_model_call(req, _identity_handler)  # type: ignore[arg-type]
         assert req.model is sentinels["p/text"]
 
     @pytest.mark.asyncio
@@ -266,5 +270,5 @@ class TestPriorityChain:
         async def async_handler(r: Any) -> Any:
             return r
 
-        await mw.awrap_model_call(req, async_handler)  # type: ignore[arg-type]
+        req = await mw.awrap_model_call(req, async_handler)  # type: ignore[arg-type]
         assert req.model is sentinels["p/fast"]

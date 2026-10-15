@@ -179,6 +179,27 @@ async def test_awrap_tool_call_plan_blocks_other_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_device_plan_writes_only_the_expert_plan_store() -> None:
+    middleware = ConversationModeMiddleware()
+    for path, allowed in [
+        ("/.agent/plans/inspect.md", True),
+        ("plans/inspect.md", False),
+        ("/.agent/plans/../private.md", False),
+    ]:
+        request = ToolCallRequest(
+            tool_call={"name": "write_file", "args": {"file_path": path}, "id": "plan"},
+            tool=None,
+            state={},
+            runtime=None,
+        )
+        handler = AsyncMock(return_value=ToolMessage(content="written", tool_call_id="plan"))
+        with _configurable(conversation_mode="plan", octop_execution_context={"context_id": "device"}):
+            result = await middleware.awrap_tool_call(request, handler)
+        assert (result.status != "error") == allowed
+        assert handler.await_count == int(allowed)
+
+
+@pytest.mark.asyncio
 async def test_ask_blocks_skill_path_read() -> None:
     mw = ConversationModeMiddleware()
     request = ToolCallRequest(

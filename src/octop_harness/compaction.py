@@ -58,6 +58,8 @@ class CompactResult:
     """
     display_path: str | None = None
     """POSIX workspace-relative path for UI (no host drive / home / backslashes)."""
+    before_estimated_tokens: int | None = None
+    after_estimated_tokens: int | None = None
 
 
 def display_offload_path(file_path: str | None, session_id: str = "") -> str:
@@ -292,6 +294,8 @@ async def _persist_compact_event(
         file_path=file_path,
         display_path=shown,
         removed_tokens=removed_tokens,
+        before_estimated_tokens=conversation_tokens_from_messages(replay_recall_snapshots([*to_summarize, *preserved])),
+        after_estimated_tokens=conversation_tokens_from_messages(replay_recall_snapshots([summary_msg, *preserved])),
     )
 
 

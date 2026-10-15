@@ -100,7 +100,7 @@ class TestResolveAndLifecycle:
         client.containers.run.assert_called_once()
         kwargs = client.containers.run.call_args.kwargs
         assert kwargs["image"] == "python:3.12-slim"
-        expected_root = str(tmp_path.resolve())
+        expected_root = "/" + tmp_path.resolve().as_posix().lstrip("/")
         assert kwargs["working_dir"] == expected_root
         assert kwargs["network_mode"] == "none"
         assert kwargs["name"] == "sandbox_agent_lifecycle1"
@@ -312,7 +312,7 @@ class TestPathMapping:
 
         _docker_mod, _client, _container = mock_docker
         sandbox = DockerSandbox(workspace_dir=tmp_path, image="python:3.12-slim")
-        root = str(tmp_path.resolve())
+        root = "/" + tmp_path.resolve().as_posix().lstrip("/")
         assert sandbox._workspace_root == root
         assert sandbox._map_path("/SOUL.md") == f"{root}/SOUL.md"
         assert sandbox._map_path("rel.txt") == f"{root}/rel.txt"
@@ -379,7 +379,7 @@ class TestPathMapping:
                 return b""
             m = re.search(r"base64\.b64decode\('([^']+)'\)", c)
             path = base64.b64decode(m.group(1)).decode() if m else "?"
-            root = str(tmp_path.resolve())
+            root = "/" + tmp_path.resolve().as_posix().lstrip("/")
             assert path == root, f"ls must target sandbox workspace, got {path!r}"
             entries = [
                 {"path": f"{root}/SOUL.md", "is_dir": False},
@@ -440,7 +440,7 @@ class TestPathMapping:
             m = re.search(r"base64\.b64decode\('([^']+)'\)", c)
             path = base64.b64decode(m.group(1)).decode() if m else "?"
             seen_paths.append(path)
-            root = str(tmp_path.resolve())
+            root = "/" + tmp_path.resolve().as_posix().lstrip("/")
             assert path == root, f"async ls must map to workspace, got {path!r}"
             return (json.dumps({"path": f"{root}/AGENTS.md", "is_dir": False}) + "\n").encode()
 
@@ -460,7 +460,7 @@ class TestPathMapping:
         result = asyncio.run(sandbox.als("/"))
         paths = [e["path"] if isinstance(e, dict) else e.path for e in (result.entries or [])]
         assert paths == ["/AGENTS.md"]
-        assert str(tmp_path.resolve()) in seen_paths
+        assert "/" + tmp_path.resolve().as_posix().lstrip("/") in seen_paths
 
         ws = BackendWorkspace(sandbox, tmp_path)
         listed = asyncio.run(ws.als("."))
@@ -490,9 +490,10 @@ class TestPathMapping:
 
         block = tool.invoke({"file_path": "/AI助手能力介绍.pptx"})
         assert block["source"]["url"].startswith("file://")
-        from urllib.parse import unquote, urlparse
+        from urllib.parse import urlparse
+        from urllib.request import url2pathname
 
-        local = Path(unquote(urlparse(block["source"]["url"]).path))
+        local = Path(url2pathname(urlparse(block["source"]["url"]).path))
         assert local.read_bytes() == b"pptx-bytes"
         # Delivery cache only — not the live workspace on host.
         assert (tmp_path / ".harness-materialize").exists()

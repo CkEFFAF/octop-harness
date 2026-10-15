@@ -53,16 +53,14 @@ class ModelRouterMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        request.model = self._select_model(request)
-        return handler(request)
+        return handler(request.override(model=self._select_model(request)))
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        request.model = self._select_model(request)
-        return await handler(request)
+        return await handler(request.override(model=self._select_model(request)))
 
     def _select_model(self, request: ModelRequest) -> Any:
         ref = self._select_ref(request)

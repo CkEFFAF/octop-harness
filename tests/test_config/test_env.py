@@ -71,7 +71,9 @@ class TestDetectHarnessPrefix:
             "harness_provider_foo_api_key": "key",
             "harness_provider_foo_base_url": "https://foo.com/v1",
         }
-        with patch.dict("os.environ", env, clear=True):
+        # Test exact-key parser behavior, independently of Windows' case-folding
+        # environment mapping (which uppercases these keys before iteration).
+        with patch("os.environ", env):
             providers, _ = detect_providers_from_env()
         assert not any(p.id == "foo" for p in providers)
 

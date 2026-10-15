@@ -204,6 +204,7 @@ def filesystem_guard_block_reason(
     *,
     tool_name: str,
     params: dict[str, Any],
+    native_paths: bool = False,
 ) -> str | None:
     """Return a rejection message when *tool_name* is denied by *permissions*.
 
@@ -220,7 +221,7 @@ def filesystem_guard_block_reason(
     if raw_path is None:
         return None
     try:
-        validated_path = validate_path(raw_path)
+        validated_path = raw_path if native_paths else validate_path(raw_path)
     except ValueError:
         return None
     if _check_fs_permission(permissions, operation, validated_path) == "deny":
@@ -384,6 +385,26 @@ class FilesystemGuardMiddleware(AgentMiddleware[Any, Any]):
             if softened is not None:
                 return softened
             raise
+
+
+class AgentStoreGuardMiddleware(FilesystemGuardMiddleware):
+    """Keep expert storage deny rules while device policy owns project paths."""
+
+    def _rewrite_legacy_windows_request(self, request: ToolCallRequest) -> ToolCallRequest:
+        return request
+
+    def _blocked_message(self, request: ToolCallRequest) -> ToolMessage | None:
+        from octop_harness.backends.execution import AGENT_STORE_PREFIX
+
+        name, call_id = _tool_call_meta(request)
+        args = dict(request.tool_call.get("args") or {})
+        path = _path_from_tool_args(name, args)
+        if not path or not path.startswith(AGENT_STORE_PREFIX):
+            return None
+        key = "file_path" if "file_path" in args else "path"
+        args[key] = path[len(AGENT_STORE_PREFIX) - 1 :]
+        reason = filesystem_guard_block_reason(self._permissions, tool_name=name, params=args, native_paths=True)
+        return ToolMessage(content=reason, name=name, tool_call_id=call_id, status="error") if reason else None
 
 
 __all__ = [

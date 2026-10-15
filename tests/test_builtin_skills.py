@@ -75,7 +75,7 @@ class TestSkillsPackaged:
         assert skill_files, f"{skill_name}: SKILL.md not found"
         _, _, content = skill_files[0]
         text = content.decode("utf-8")
-        match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+        match = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.DOTALL)
         assert match is not None, f"{skill_name}: missing frontmatter"
         fm = match.group(1)
         assert re.search(r"^name:\s*\S", fm, re.MULTILINE), f"{skill_name}: missing name"

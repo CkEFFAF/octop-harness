@@ -37,7 +37,7 @@ class TestDefaultSpec:
         assert isinstance(backend, MountedCompositeBackend)
         assert backend.artifacts_root == str(tmp_path.resolve())
         assert isinstance(backend.default, LocalShellBackend)
-        assert str(backend.cwd) == "/"
+        assert backend.cwd == Path("/").resolve()
         assert supports_execution(backend)
 
     def test_host_root_spec_with_workspace_scopes_artifacts(self, tmp_path: Path) -> None:
@@ -268,7 +268,7 @@ class TestComposite:
         assert backend.artifacts_root == str(tmp_path.resolve())
         # Sub-backend must not be double-wrapped.
         assert isinstance(backend.default, LocalShellBackend)
-        assert str(backend.cwd) == "/"
+        assert backend.cwd == Path("/").resolve()
 
     def test_composite_explicit_artifacts_root_preserved(self, tmp_path: Path) -> None:
         custom = str((tmp_path / "custom-artifacts").resolve())

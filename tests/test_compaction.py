@@ -30,6 +30,38 @@ def _long_thread(n: int = 12) -> list:
 
 
 @pytest.mark.asyncio
+async def test_manual_compaction_emits_receipt_only_after_success() -> None:
+    from octop_harness import HarnessAgent
+
+    events = []
+    agent = object.__new__(HarnessAgent)
+    agent._config = SimpleNamespace(run_event_sink=events.append)
+    agent._graph = MagicMock()
+    agent._model_factory = MagicMock()
+    agent._backend = MagicMock()
+    agent._summarization_mw = None
+    agent._context_usage_mw = None
+    result = CompactResult(
+        ok=True,
+        summarized_count=10,
+        preserved_count=6,
+        display_path="conversation_history/history.md",
+        before_estimated_tokens=1200,
+        after_estimated_tokens=200,
+    )
+    with patch("octop_harness.compaction.force_compact_thread", AsyncMock(return_value=result)):
+        assert (await agent.acompact_conversation("thread", model="test/model")).ok
+    assert len(events) == 1
+    assert events[0]["kind"] == "compaction"
+    assert events[0]["thread_id"] == "thread"
+    assert events[0]["payload"]["before_estimated_tokens"] == 1200
+    assert events[0]["payload"]["after_estimated_tokens"] == 200
+    with patch("octop_harness.compaction.force_compact_thread", AsyncMock(return_value=CompactResult(ok=False))):
+        assert not (await agent.acompact_conversation("thread", model="test/model")).ok
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
 async def test_force_compact_nothing_when_too_short() -> None:
     graph = MagicMock()
     graph.aget_state = AsyncMock(return_value=SimpleNamespace(values={"messages": [HumanMessage(content="hi")]}))

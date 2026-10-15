@@ -12,7 +12,7 @@ from octop_harness.acp.models import (
     ACPTransportError,
     SuspendedPermission,
 )
-from octop_harness.acp.service import ACPService
+from octop_harness.acp.service import ACPService, register_acp_service
 
 __all__ = [
     "ACPConfig",
@@ -24,4 +24,5 @@ __all__ = [
     "ACPSessionError",
     "ACPTransportError",
     "SuspendedPermission",
+    "register_acp_service",
 ]

@@ -599,6 +599,8 @@ class HarnessAgentConfig:
     #   - a dict with a "type" key plus per-type kwargs
     #   - any object that implements ``BackendProtocol``
     backend: Any = None
+    # Agent content uses backend; project tools can use a separate runtime backend.
+    execution_backend: Any = None
     # New Windows subtree experts set this. Shell commands, environment
     # values, and stdout/stderr are not scanned for paths. Callers convert a
     # virtual path through the ``virtual_to_native_path`` tool.
@@ -730,6 +732,9 @@ class HarnessAgentConfig:
     # —— Advanced passthroughs ——
     tools: list[Any] | None = None
     middleware: list[Any] | None = None
+    # Provider-bound lifecycle snapshots; the application owns durable storage.
+    request_snapshot_sink: Callable[[dict[str, Any]], None] | None = None
+    run_event_sink: Callable[[dict[str, Any]], None] | None = None
     interrupt_on: dict[str, Any] | None = None
     response_format: Any = None
     permissions: list[Any] | None = None
@@ -994,6 +999,8 @@ class HarnessAgentConfig:
             "checkpointer",
             "tools",
             "middleware",
+            "request_snapshot_sink",
+            "run_event_sink",
             "permissions",
             "interrupt_on",
             "response_format",
@@ -1088,6 +1095,8 @@ class HarnessAgentConfig:
         # Backend: serialize only if it's a string or dict spec; live instances skipped.
         if isinstance(self.backend, str | dict) or self.backend is None:
             out["backend"] = self.backend
+        if isinstance(self.execution_backend, str | dict):
+            out["execution_backend"] = self.execution_backend
         # Memory backend: serialize only if it's a string or dict spec; live instances skipped.
         if isinstance(self.memory_backend, str | dict):
             out["memory_backend"] = self.memory_backend

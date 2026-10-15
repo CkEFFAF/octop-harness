@@ -79,9 +79,13 @@ def parse_conversation_mode(value: object | None) -> ConversationMode:
     return DEFAULT_CONVERSATION_MODE
 
 
-def is_allowed_plan_path(path: str) -> bool:
+def is_allowed_plan_path(path: str, *, agent_store: bool = False) -> bool:
     """True when *path* is a single ``plans/<ascii-slug>.md`` workspace file."""
     raw = (path or "").strip().replace("\\", "/")
+    if agent_store:
+        if not raw.startswith("/.agent/"):
+            return False
+        raw = raw[len("/.agent/") :]
     if not raw or ".." in raw:
         return False
     parts = [p for p in raw.lstrip("/").split("/") if p and p != "."]
@@ -224,6 +228,8 @@ def apply_conversation_mode_to_request(request: ModelRequest[Any]) -> ModelReque
         configurable = {}
     mode = mode_from_configurable(configurable)
     hint = _HINTS[mode]
+    if mode == "plan" and configurable.get("octop_execution_context"):
+        hint = hint.replace("plans/", "/.agent/plans/")
     out = request
     if mode != "craft":
         allowed = allowed_tool_names(mode, extra_read=extra_read_tools(configurable))
@@ -262,6 +268,7 @@ def _tool_block_reason(
     args: dict[str, Any],
     mode: ConversationMode,
     extra_read: Iterable[str],
+    agent_store: bool = False,
 ) -> ToolMessage | None:
     if mode == "craft":
         return None
@@ -273,7 +280,7 @@ def _tool_block_reason(
         return _blocked_message(tool_name=tool_name or base, mode=mode, tool_call_id="")
     if mode == "plan" and base in PLAN_WRITE_TOOLS:
         path = _path_from_args(args)
-        if not is_allowed_plan_path(path):
+        if not is_allowed_plan_path(path, agent_store=agent_store):
             return _plan_path_blocked_message(path=path, tool_call_id="")
     return None
 
@@ -326,6 +333,7 @@ class ConversationModeMiddleware(AgentMiddleware[Any, Any]):
             args=args,
             mode=mode,
             extra_read=extra_read_tools(configurable),
+            agent_store=bool(configurable.get("octop_execution_context")),
         )
         if blocked is None:
             return None

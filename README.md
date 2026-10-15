@@ -3,6 +3,45 @@
   <h1>Octop Harness</h1>
 </div>
 
+## Request and run observations
+
+`HarnessAgentConfig.request_snapshot_sink` receives bounded final model requests
+and their usage receipts. `run_event_sink` receives correlated tool and plan
+lifecycle events with names, references and bounded plan items; file contents,
+command input and tool output bodies stay outside that ledger. Both callbacks
+are runtime-only and are omitted from serialized agent configuration. The host
+owns authentication, persistence and inspection of these observations.
+
+Snapshots redact complete values before truncating text or identifiers. At most
+256 component details are retained; `component_count`, `component_counts` and
+`estimated_tokens_by_kind` still describe the complete request. Truncation flags
+distinguish omitted details and bounded metadata from complete observations.
+`ChatRequest` strips internal summary, skill and recall markers from external
+messages; runtime-generated and checkpointed middleware messages retain them.
+
+With separate project execution, snapshots classify marked conversation summaries
+as injected context and attach actual summarizer transformation receipts. Counts
+before/after are message estimates, not provider billing; reusing an old summary
+does not count as a fresh compaction. Successful manual compaction emits a run
+receipt with the retained history reference and message estimates.
+
+## Separate expert storage and project execution
+
+Set `HarnessAgentConfig.execution_backend` to a backend spec or live backend instance
+when project tools must operate independently of the expert's content store.
+`backend` and `workspace_dir` continue to locate internal expert materials and
+runtime persistence. `agent.agent_store` exposes that storage facade;
+`agent.project_backend` exposes project file and execution operations.
+
+The graph addresses internal materials through `/.agent/` and sends other file
+operations and commands to the project backend. Skills, memory sources and
+compaction history retain their storage location. A host can supply a backend
+that resolves the execution target per request; it must preserve authenticated
+ownership and must not mutate a shared agent's target between concurrent calls.
+
+Backend specs round-trip through configuration serialization. Live backend
+instances are runtime dependencies and are omitted from serialized config.
+
 OpenAI models that require Responses can set `ModelConfig(use_responses_api=True)`.
 Chat Completions remains the default, and this setting does not enable hosted tool
 search. OpenCode Go presets carry the appropriate per-model value.

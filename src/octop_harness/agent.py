@@ -169,6 +169,13 @@ class HarnessAgent:
             self._workspace_path,
             system_files_path=self._config.system_files_path,
         )
+        self._storage_backend = self._backend
+        self._project_backend = self._backend
+        if self._config.execution_backend is not None:
+            from octop_harness.backends.execution import StorageExecutionBackend
+
+            self._project_backend = resolve_backend(self._config.execution_backend)
+            self._backend = StorageExecutionBackend(self._project_backend, self._storage_backend)
         self._wire_workspace_dotenv_for_execute()
         self._owns_model_factory = model_factory is None
         self._model_factory = self._init_model_factory(model_factory)
@@ -178,6 +185,15 @@ class HarnessAgent:
             model_factory=self._model_factory,
         )
         self._langfuse_callbacks: list[Any] | None = None
+        self._request_callbacks: list[Any] = []
+        if config.request_snapshot_sink is not None:
+            from octop_harness.observability.request_snapshot import RequestSnapshotCallback
+
+            self._request_callbacks.append(RequestSnapshotCallback(config.request_snapshot_sink))
+        if config.run_event_sink is not None:
+            from octop_harness.observability.run_events import RunEventCallback
+
+            self._request_callbacks.append(RunEventCallback(config.run_event_sink))
         self._protocols: dict[str, ChatProtocol] = {}
         # Optional hook called once immediately after bootstrap completes.
         # Set by the caller (e.g. Orca) to trigger a full config reload.
@@ -228,6 +244,16 @@ class HarnessAgent:
     def workspace(self) -> BackendWorkspace:
         """Facade for L1 agent storage reads/writes via the backend."""
         return self._workspace
+
+    @property
+    def agent_store(self) -> BackendWorkspace:
+        """Expert content storage, independent of the current project target."""
+        return self._workspace
+
+    @property
+    def project_backend(self) -> BackendProtocol:
+        """Filesystem and execution backend for project tools."""
+        return self._project_backend
 
     @property
     def memory(self) -> Any | None:
@@ -809,6 +835,28 @@ class HarnessAgent:
         # reporting the pre-compaction total until the next turn.
         if result.ok and self._context_usage_mw is not None:
             self._context_usage_mw.shrink_snapshot(thread_id, removed_tokens=result.removed_tokens)
+        sink = getattr(self._config, "run_event_sink", None)
+        if result.ok and sink is not None:
+            identity = f"compaction:{uuid.uuid4().hex}"
+            event = {
+                "event_id": identity,
+                "thread_id": thread_id,
+                "run_id": identity,
+                "kind": "compaction",
+                "status": "completed",
+                "created_at": time.time(),
+                "payload": {
+                    "file_path": result.display_path,
+                    "before_estimated_tokens": result.before_estimated_tokens,
+                    "after_estimated_tokens": result.after_estimated_tokens,
+                    "summarized_count": result.summarized_count,
+                    "preserved_count": result.preserved_count,
+                },
+            }
+            try:
+                await asyncio.to_thread(sink, event)
+            except Exception:
+                logger.warning("Compaction receipt could not be persisted for thread %s", thread_id, exc_info=True)
         return result
 
     def _default_max_input_tokens(self) -> int:
@@ -1268,8 +1316,9 @@ class HarnessAgent:
             self._sync_protocol_graph()
 
     def _wrap_graph(self, graph: Any) -> Any:
-        if self._langfuse_callbacks:
-            return graph.with_config({"callbacks": self._langfuse_callbacks})
+        callbacks = [*getattr(self, "_request_callbacks", []), *(self._langfuse_callbacks or [])]
+        if callbacks:
+            return graph.with_config({"callbacks": callbacks})
         return graph
 
     def _sync_protocol_graph(self) -> None:
@@ -1333,10 +1382,18 @@ class HarnessAgent:
 
     def _close_backend(self) -> None:
         """Close the backend when it exposes a ``close`` hook (idempotent)."""
-        close = getattr(self._backend, "close", None)
-        if callable(close):
-            with contextlib.suppress(Exception):
-                close()
+        closed: set[int] = set()
+        for backend in (
+            getattr(self, "_project_backend", self._backend),
+            getattr(self, "_storage_backend", self._backend),
+        ):
+            if id(backend) in closed:
+                continue
+            closed.add(id(backend))
+            close = getattr(backend, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
 
     def _build_tools(self) -> list[Any]:
         """Compose builtin + web-search + memory + user tools."""
@@ -1556,6 +1613,10 @@ class HarnessAgent:
             max_tokens=self._default_max_input_tokens(),
         )
         chain.append(self._context_usage_mw)
+        if cfg.request_snapshot_sink is not None:
+            from octop_harness.observability.sources import RequestSourcesMiddleware
+
+            chain.append(RequestSourcesMiddleware())
 
         bootstrap = self._build_bootstrap_middleware()
         if bootstrap is not None:
@@ -1732,6 +1793,69 @@ class HarnessAgent:
         if checkpointer is not None:
             kwargs["checkpointer"] = checkpointer
 
+        self._apply_execution_graph_inputs(kwargs)
+        return self._create_deep_graph(kwargs)
+
+    def _apply_execution_graph_inputs(self, kwargs: dict[str, Any]) -> None:
+        """Address expert materials separately from project-native paths."""
+        if self._config.execution_backend is None:
+            return
+        from octop_harness.backends.execution import StorageExecutionBackend
+        from octop_harness.middleware.filesystem_guard import AgentStoreGuardMiddleware
+        from octop_harness.middleware.native_filesystem import NativeFilesystemMiddleware
+
+        kwargs["middleware"] = [
+            *[mw for mw in kwargs["middleware"] if mw.__class__.__name__ != "FilesystemGuardMiddleware"],
+            AgentStoreGuardMiddleware(list(self._config.permissions or [])),
+            NativeFilesystemMiddleware(self._backend),
+        ]
+
+        kwargs["system_prompt"] = (
+            (self._config.system_prompt or "").rstrip()
+            + "\n\nProject tools use the runtime execution target. Its working directory is a default, "
+            "not a filesystem restriction. Expert materials use the explicit /.agent/ storage namespace.\n\n"
+            + render_slash_skill_prompt(language=self._config.language)
+        ).strip()
+        if self._config.media_generation is None or not self._config.media_generation.has_api_key():
+            kwargs["system_prompt"] += (
+                "\nMedia generation is unavailable until a media provider is configured; do not claim generated media."
+            )
+        for spec in kwargs.get("subagents", []):
+            if "runnable" in spec or spec.get("type") == "remote":
+                continue
+            spec["middleware"] = [
+                *(spec.get("middleware") or []),
+                AgentStoreGuardMiddleware(list(self._config.permissions or [])),
+                NativeFilesystemMiddleware(self._backend),
+            ]
+            for key in ("skills", "memory"):
+                if key in spec:
+                    spec[key] = [StorageExecutionBackend.storage_path(path) for path in spec[key]]
+        for key in ("skills", "memory"):
+            if key in kwargs:
+                kwargs[key] = [StorageExecutionBackend.storage_path(path) for path in kwargs[key]]
+
+    def _create_deep_graph(self, kwargs: dict[str, Any]) -> Any:
+        """Build with an explicit summarizer when project and storage differ."""
+        if self._config.execution_backend is not None:
+            from deepagents.middleware.summarization import compute_summarization_defaults
+
+            from octop_harness.middleware.memory_recall import count_tokens_with_recall
+            from octop_harness.observability.compression import ObservedSummarizationMiddleware
+
+            defaults = compute_summarization_defaults(kwargs["model"])
+            self._summarization_mw = ObservedSummarizationMiddleware(
+                model=kwargs["model"],
+                backend=self._backend,
+                token_counter=count_tokens_with_recall,
+                trigger=defaults["trigger"],
+                keep=defaults["keep"],
+                truncate_args_settings=defaults["truncate_args_settings"],
+                trim_tokens_to_summarize=None,
+            )
+            kwargs["middleware"] = [*kwargs["middleware"], self._summarization_mw]
+            return deepagents.create_deep_agent(**kwargs)
+
         # Indirect through the module so test patches on
         # ``deepagents.create_deep_agent`` are picked up at call time.
         # Capture the main-agent SummarizationMiddleware (last factory call)
@@ -1899,33 +2023,25 @@ async def _async_close_sqlite_connection(conn: Any) -> None:
 def _sync_close_sqlite_connection(conn: Any) -> None:
     """Close an ``aiosqlite.Connection`` synchronously for agent teardown.
 
-    ``aiosqlite.Connection.close()`` is async. During pytest teardown (or any
-    sync ``close()`` while an event loop is running) scheduling ``ensure_future``
-    leaves the underlying ``sqlite3.Connection`` open until GC — which trips
-    ``ResourceWarning`` under pytest's strict unraisable hook. Closing the
-    private ``_connection`` first is safe: checkpoint writes are committed per
-    step, and ``close()`` is idempotent.
+    The connection owns its SQLite handle on a worker thread. Ask that worker
+    to drain and close, then join it before the caller can close its event loop.
+    Closing the raw handle from this thread can violate SQLite thread affinity;
+    scheduling an async close without awaiting it races loop shutdown.
     """
-    raw = getattr(conn, "_connection", None)
-    if raw is not None:
-        with contextlib.suppress(Exception):
-            raw.close()
     stop_fn = getattr(conn, "stop", None)
     if callable(stop_fn):
         with contextlib.suppress(Exception):
-            fut = stop_fn()
-            if fut is not None:
-                try:
-                    asyncio.get_running_loop()
-                except RuntimeError:
-                    with contextlib.suppress(Exception):
-                        asyncio.run(fut)
-    if raw is None:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            with contextlib.suppress(Exception):
-                asyncio.run(conn.close())
+            stop_fn()
+            worker = getattr(conn, "_thread", conn)
+            if worker.is_alive():
+                worker.join()
+        return
+    # Compatibility for connections without a synchronous worker shutdown API.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        with contextlib.suppress(Exception):
+            asyncio.run(conn.close())
 
 
 def _build_async_sqlite_saver(conn: Any) -> Any:

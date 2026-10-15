@@ -9,6 +9,7 @@ import os
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from octop_harness.acp.client import ACPHostedClient
@@ -54,6 +55,13 @@ class ACPService:
         self.config = config
         self._lock = asyncio.Lock()
         self._sessions: dict[tuple[str, str], _Conversation] = {}
+
+    def resolve_cwd(self, cwd: str, workspace_dir: Path) -> str:
+        """Resolve local runner paths; remote services may keep native paths."""
+        candidate = Path(cwd.strip()).expanduser() if cwd.strip() else workspace_dir
+        if not candidate.is_absolute():
+            candidate = workspace_dir / candidate
+        return str(candidate.resolve())
 
     async def run_turn(
         self,
@@ -126,8 +134,9 @@ class ACPService:
         async with self._lock:
             conversations = list(self._sessions.values())
             self._sessions.clear()
-        for conversation in conversations:
-            await self._close_conversation(conversation)
+        # One cancelled prompt or broken transport must not strand later
+        # sessions after their registry entries have already been removed.
+        await asyncio.gather(*(self._close_conversation(item) for item in conversations), return_exceptions=True)
 
     async def get_session(self, thread_id: str, runner: str) -> _Conversation | None:
         async with self._lock:
@@ -307,9 +316,9 @@ class ACPService:
         try:
             if conversation.prompt_task is not None and not conversation.prompt_task.done():
                 conversation.prompt_task.cancel()
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(Exception, asyncio.CancelledError):
                     await conversation.prompt_task
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception, asyncio.CancelledError):
                 await asyncio.wait_for(
                     conversation.conn.close_session(session_id=conversation.acp_session_id),
                     timeout=5.0,
@@ -338,9 +347,14 @@ def get_acp_service(service_key: str) -> ACPService | None:
 
 
 def init_acp_service(service_key: str, config: ACPConfig) -> ACPService:
+    return register_acp_service(service_key, ACPService(config=config))
+
+
+def register_acp_service(service_key: str, service: ACPService) -> ACPService:
+    """Install an application-owned ACP transport without private registry access."""
     previous = _services.get(service_key)
-    _services[service_key] = ACPService(config=config)
-    if previous is not None:
+    _services[service_key] = service
+    if previous is not None and previous is not service:
         _schedule_close(previous)
     return _services[service_key]
 
@@ -383,12 +397,19 @@ def _shutdown_services() -> None:
             return
     except RuntimeError:
         pass
+
+    async def close_services() -> None:
+        # Create gather inside the loop; after asyncio.run() there is no
+        # default loop on which gather could otherwise create its futures.
+        await asyncio.gather(*(s.close_all_sessions() for s in services), return_exceptions=True)
+
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(asyncio.gather(*(s.close_all_sessions() for s in services)))
-        loop.close()
+        loop.run_until_complete(close_services())
     except (OSError, RuntimeError):
         pass
+    finally:
+        loop.close()
 
 
 atexit.register(_shutdown_services)
