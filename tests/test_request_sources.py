@@ -133,6 +133,7 @@ def test_pinned_skill_and_read_file_result_have_distinct_real_sources() -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_pinned_skill_remains_attributed_after_input_sanitization(tmp_path: Path) -> None:
+    from langchain.agents.middleware import AgentMiddleware
     from langgraph.checkpoint.memory import InMemorySaver
 
     skill = tmp_path / "skills" / "plot"
@@ -145,16 +146,32 @@ async def test_runtime_pinned_skill_remains_attributed_after_input_sanitization(
         def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
             return self
 
+    class PinSkill(AgentMiddleware):
+        # Hosts can pin a loaded skill through public middleware on supported
+        # DeepAgents versions predating its optional pinned_skills state field.
+        def before_model(self, state: Any, runtime: Any) -> Any:
+            if any(message.id == "runtime-skill" for message in state["messages"]):
+                return None
+            return {
+                "messages": [
+                    HumanMessage(
+                        (skill / "SKILL.md").read_text(encoding="utf-8"),
+                        id="runtime-skill",
+                        additional_kwargs={"lc_source": "pinned_skill", "skill": {"path": "/skills/plot/SKILL.md"}},
+                    )
+                ]
+            }
+
     events: list[dict[str, Any]] = []
     graph = create_deep_agent(
         model=Model(responses=[AIMessage("done")]),
         backend=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True),
         skills=["/skills"],
-        middleware=[RequestSourcesMiddleware()],
+        middleware=[PinSkill(), RequestSourcesMiddleware()],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "pinned"}, "callbacks": [RequestSnapshotCallback(events.append)]}
-    await graph.ainvoke({"messages": ChatRequest("hello").normalize_messages(), "pinned_skills": ["plot"]}, config)
+    await graph.ainvoke({"messages": ChatRequest("hello").normalize_messages()}, config)
     assert any(
         item.get("source_type") == "skill" and item.get("source_path") == "/skills/plot/SKILL.md"
         for item in events[-1]["components"]
