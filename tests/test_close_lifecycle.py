@@ -81,11 +81,12 @@ class TestSyncCloseSqliteConnection:
         db = tmp_path / "cp.sqlite"
         conn = await aiosqlite.connect(str(db))
         await conn.execute("select 1")
-        assert getattr(conn, "_connection", None) is not None
-
-        _sync_close_sqlite_connection(conn)
         raw = getattr(conn, "_connection", None)
         assert raw is not None
+
+        _sync_close_sqlite_connection(conn)
+        assert not conn._thread.is_alive()
+        assert getattr(conn, "_connection", None) is None
         with pytest.raises(sqlite3.ProgrammingError):
             raw.execute("select 1")
 

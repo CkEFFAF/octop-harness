@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from octop_harness.providers import ModelPreset, ProviderPreset
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "RunEventCallback": ("octop_harness.observability.run_events", "RunEventCallback"),
     "AgentEntry": ("octop_harness.manager", "AgentEntry"),
     "HarnessAgentManager": ("octop_harness.manager", "HarnessAgentManager"),
     "ModelPreset": ("octop_harness.providers", "ModelPreset"),
@@ -45,6 +46,7 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "resolve_protocol": ("octop_harness.protocols", "resolve_protocol"),
     "AgentEventType": ("octop_harness.protocols.langgraph", "AgentEventType"),
     "SecurityPolicy": ("octop_harness.security.models", "SecurityPolicy"),
+    "RequestSnapshotCallback": ("octop_harness.observability.request_snapshot", "RequestSnapshotCallback"),
 }
 
 
@@ -71,6 +73,8 @@ __all__ = [
     "ModelPreset",
     "ProviderConfig",
     "ProviderPreset",
+    "RequestSnapshotCallback",
+    "RunEventCallback",
     "SecurityPolicy",
     "__version__",
     "current_log_file",

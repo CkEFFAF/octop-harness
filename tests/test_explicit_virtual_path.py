@@ -119,19 +119,21 @@ def test_explicit_flag_skips_same_drive_artifacts_shortcut(tmp_path: Path, monke
     workspace = host / "agents" / "id"
     workspace.mkdir(parents=True)
     original = Path.resolve
+    drive_root = f"{host.drive}/" if host.drive else "C:/"
 
     def fake_resolve(self: Path, *args: object, **kwargs: object) -> Path:
         raw = os.fspath(self)
         # POSIX pathlib drops the slash in ``C:/``, so the path object is ``C:``.
-        if raw in {"/", "C:", "C:/", "C:\\"}:
+        if raw in {"/", str(Path(drive_root))}:
             return host
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "resolve", fake_resolve)
-    plain = _artifacts_root_for_workspace(workspace, root_dir="C:/", system_files_path=".octop")
+    monkeypatch.setattr("octop_harness.backends._HOST_ROOT", drive_root)
+    plain = _artifacts_root_for_workspace(workspace, root_dir=drive_root, system_files_path=".octop")
     flagged = _artifacts_root_for_workspace(
         workspace,
-        root_dir="C:/",
+        root_dir=drive_root,
         system_files_path=".octop",
         explicit_virtual_paths=True,
     )

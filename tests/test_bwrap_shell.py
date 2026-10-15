@@ -290,7 +290,7 @@ def test_execute_falls_back_when_bwrap_missing_binary(tmp_path: Path) -> None:
         result = backend.execute("python /generated/run.py")
     assert result.exit_code == 0
     assert backend._bwrap_path is None
-    assert host_exec.call_args.args[0] == f"python {tmp_path.resolve()}/generated/run.py"
+    assert host_exec.call_args.args[0] == f"python {tmp_path.resolve() / 'generated' / 'run.py'}"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="fallback integration uses POSIX shell")
@@ -391,10 +391,14 @@ def test_rewrite_command_handles_spaces_urls_globs_and_host_paths(tmp_path: Path
         workspace_dir=workspace,
     )
 
-    quoted_root = shlex.quote(str(root.resolve()))
     assert "https://example.com/a" in rewritten
-    assert f"{quoted_root}/.octop/workspaces/QH53B8/generated/out.txt" in rewritten
-    assert f"{quoted_root}/.octop/workspaces/QH53B8/generated/*.txt" in rewritten
+    if os.name == "nt":
+        assert subprocess.list2cmdline([str(generated / "out.txt")]) in rewritten
+        assert subprocess.list2cmdline([str(generated / "*.txt")]) in rewritten
+    else:
+        quoted_root = shlex.quote(str(root.resolve()))
+        assert f"{quoted_root}/.octop/workspaces/QH53B8/generated/out.txt" in rewritten
+        assert f"{quoted_root}/.octop/workspaces/QH53B8/generated/*.txt" in rewritten
     assert "ls /usr/bin" in rewritten
 
 

@@ -466,7 +466,10 @@ async def test_volcengine_video_timeout_cancels_remote_task() -> None:
         with pytest.raises(MediaGenerationError, match="timed out"):
             await provider.generate_video(VideoGenerationRequest(prompt="x"))
 
-    assert methods == ["POST", "GET", "DELETE"]
+    # Timer resolution differs by platform; any observed polling must stop
+    # before one cancellation request, with no further work after cancellation.
+    assert methods[0] == "POST" and methods[-1] == "DELETE"
+    assert methods[1:-1] and set(methods[1:-1]) == {"GET"}
 
 
 @pytest.mark.parametrize(

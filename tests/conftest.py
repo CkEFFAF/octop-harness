@@ -35,6 +35,7 @@ def _isolate_home_for_runtime_logs(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     home = tmp_path.parent / f"{tmp_path.name}_isolated_home"
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     # init caches this path at import time, before this fixture changes HOME.
     # Overwrite tests must never write the developer's real provider template.

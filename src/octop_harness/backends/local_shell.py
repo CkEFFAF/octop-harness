@@ -181,6 +181,12 @@ def present_host_paths_in_output(text: str, root_dir: Path | str) -> str:
     if is_host_root(root):
         return text
     replaced = text.replace(root + os.sep, "/")
+    if os.name == "nt":
+        replaced = re.sub(
+            rf"{re.escape(root)}[\\/](?P<tail>[^\s'\"(),;]*)",
+            lambda match: "/" + match["tail"].replace("\\", "/"),
+            text,
+        )
     return re.sub(rf"{re.escape(root)}(?=$|[\s'\"),:;])", "/", replaced)
 
 

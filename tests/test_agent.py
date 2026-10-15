@@ -325,8 +325,8 @@ class TestConstruction:
 
         skills = captured["skills"]
         ws = str(cfg.workspace_dir)
-        assert f"{ws}/_builtin_skills" in skills
-        assert f"{ws}/skills" in skills
+        assert Path(ws) / "_builtin_skills" in {Path(path) for path in skills}
+        assert Path(ws) / "skills" in {Path(path) for path in skills}
 
     def test_skills_paths_scoped_virtual_are_agent_facing(
         self,
@@ -1628,7 +1628,7 @@ class TestAgentVisibleWorkspaceDir:
             agent = HarnessAgent(cfg)
             assert agent._agent_visible_workspace_dir() == Path(cfg.workspace_dir).resolve()
             prompt = create.call_args.kwargs["system_prompt"]
-            assert f"Your working directory is {Path(cfg.workspace_dir).resolve()}" in prompt
+            assert f"Your working directory is {Path(cfg.workspace_dir).resolve().as_posix()}" in prompt
 
     def test_compiled_system_prompt_includes_slash_skill_rule(
         self,

@@ -307,7 +307,9 @@ def _normalize_workspace_fragment(path: str) -> str:
 
 
 def _check_move_into_descendant(src_key: str, dest_key: str, *, src: str) -> None:
-    if dest_key.startswith(f"{src_key.rstrip('/')}/"):
+    source = src_key.replace("\\", "/").rstrip("/")
+    destination = dest_key.replace("\\", "/")
+    if destination.startswith(f"{source}/"):
         msg = f"cannot move {src!r} into its own descendant"
         raise ValueError(msg)
 
@@ -473,7 +475,7 @@ class BackendWorkspace:
                 raise TypeError(msg)
             path = default
         s = str(path)
-        if s.startswith("~"):
+        if s.startswith("~") or (not s.startswith("/") and Path(s).is_absolute()):
             return str(Path(s).expanduser().resolve())
         if s.startswith("/"):
             mapped = apply_system_files_prefix(s.replace("\\", "/"), self._system_files_path)
@@ -525,9 +527,10 @@ class BackendWorkspace:
                 raise TypeError(msg)
             path = default
         s = str(path).strip()
-        if s.startswith("~"):
-            expanded = str(Path(s).expanduser().resolve())
-            return self._remap_cloud_absolute(expanded) if is_cloud_storage_backend(self._backend) else expanded
+        if s.startswith("~") or (not s.startswith("/") and Path(s).is_absolute()):
+            local_path = Path(s).expanduser().resolve()
+            key = str(local_path) if s.startswith("~") else _virtual_key_under_mount(local_path, self._backend)
+            return self._remap_cloud_absolute(str(local_path)) if is_cloud_storage_backend(self._backend) else key
         if s.startswith("/"):
             mapped = apply_system_files_prefix(s.replace("\\", "/"), self._system_files_path)
             return self._remap_cloud_absolute(mapped) if is_cloud_storage_backend(self._backend) else mapped

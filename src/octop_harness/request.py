@@ -101,7 +101,22 @@ class ChatRequest:
 
     def normalize_messages(self) -> list[BaseMessage]:
         """Return ``self.messages`` as a list of LangChain ``BaseMessage`` objects."""
-        return _normalize_messages(self.messages)
+        messages = _normalize_messages(self.messages)
+        # These markers are produced by runtime middleware, never by external
+        # input. Copy rather than mutate caller-owned messages or kwargs.
+        internal = {"lc_source", "skill", "_octop_memory_recall"}
+        return [
+            message.model_copy(
+                update={
+                    "additional_kwargs": {
+                        key: value for key, value in message.additional_kwargs.items() if key not in internal
+                    }
+                }
+            )
+            if internal.intersection(message.additional_kwargs)
+            else message
+            for message in messages
+        ]
 
     # ------------------------------------------------------------------
     # Mapping to LangGraph RunnableConfig

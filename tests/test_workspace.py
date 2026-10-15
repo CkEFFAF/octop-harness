@@ -571,8 +571,11 @@ class TestBackendWorkspaceVirtualMode:
         ws = BackendWorkspace(backend, workspace)
         local = ws.materialize_local(str(host))
         assert local is not None
-        assert local.resolve() == nest.resolve()
-        assert local.read_bytes() == b"nested-deck"
+        # Drive-qualified native Windows paths unambiguously name the host;
+        # slash-rooted POSIX inputs retain virtual-key precedence.
+        expected = host if host.drive else nest
+        assert local.resolve() == expected.resolve()
+        assert local.read_bytes() == expected.read_bytes()
 
     def test_download_bytes_uses_materialize_failback(self, tmp_path: Path) -> None:
         from deepagents.backends import FilesystemBackend

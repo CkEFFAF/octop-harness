@@ -49,6 +49,7 @@ class InboxMessage:
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
+    result_status: Literal["done", "failed", "cancelled"] | None = None
 
 
 @dataclass
@@ -91,6 +92,25 @@ class HarnessAgentInboxManager:
         self._source_locks: dict[str, asyncio.Lock] = {}
         self._target_refs: dict[str, int] = {}
         self._source_refs: dict[str, int] = {}
+        self._result_observer: Callable[[InboxMessage, str], None] | None = None
+
+    def bind_result_observer(self, observer: Callable[[InboxMessage, str], None] | None) -> None:
+        """Observe the actual child outcome before parent integration begins.
+
+        This outcome is independent of subsequent parent delivery/followup.
+        The observer receives no result body and is called at most once per job.
+        """
+        self._result_observer = observer
+
+    def _publish_result(self, msg: InboxMessage, status: Literal["done", "failed", "cancelled"]) -> None:
+        if msg.result_status is not None:
+            return
+        msg.result_status = status
+        if self._result_observer is not None:
+            try:
+                self._result_observer(msg, status)
+            except ASYNC_DEFENSIVE_OP_ERRORS:
+                logger.exception("inbox result observer failed id=%s", msg.id)
 
     # ------------------------------------------------------------------
     # Public queue API
@@ -301,6 +321,7 @@ class HarnessAgentInboxManager:
             await self._finish(msg, status="cancelled", reply_text=None, error_text=error_text)
             return
 
+        self._publish_result(msg, status)
         source_key = self._source_lock_key(msg)
         source_lock = self._lock_for(self._source_locks, self._source_refs, source_key)
         try:
@@ -330,6 +351,7 @@ class HarnessAgentInboxManager:
     ) -> None:
         if msg.status in _TERMINAL_STATUSES and msg.id not in self._messages:
             return
+        self._publish_result(msg, status)
         msg.error_text = error_text
         self._set_status(msg, status)
         try:
