@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import platform
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -90,7 +89,7 @@ class TestSendFileToUser:
         block = send_file_to_user.invoke({"file_path": "rel.png"})
         assert block["path"] == "rel.png"
         assert block["source"]["url"].endswith("rel.png")
-        assert os.path.isabs(block["source"]["url"].removeprefix("file://"))
+        assert block["source"]["url"] == target.resolve().as_uri()
 
     def test_workspace_relative_via_bound_tool(self, tmp_path: Path) -> None:
         from deepagents.backends import FilesystemBackend

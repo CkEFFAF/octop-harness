@@ -81,6 +81,14 @@ def test_blocks_ls_on_denied_directory_root() -> None:
     assert "permission denied" in reason
 
 
+@pytest.mark.parametrize("path", ["/root/.hidden/secret", "/root/agent/.octop/auth/token", "/home/u/.ssh/nested/.key"])
+def test_sensitive_patterns_cover_hidden_descendants(path: str) -> None:
+    permissions = [
+        FilesystemPermission(operations=["read", "write"], paths=["/root/**", "/home/*/.ssh/**"], mode="deny")
+    ]
+    assert filesystem_guard_block_reason(permissions, tool_name="read_file", params={"file_path": path})
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS /etc → /private/etc alias")
 def test_blocks_ls_on_macos_private_etc_alias() -> None:
     """macOS ``/etc`` → ``/private/etc``; deny rules must cover the real path."""

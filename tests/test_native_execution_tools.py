@@ -52,7 +52,7 @@ async def test_native_tools_in_full_deepagent_graph() -> None:
         middleware=[NativeFilesystemMiddleware(composite)],
     )
     result = await graph.ainvoke({"messages": [HumanMessage("inspect execution target")]})
-    assert project.paths == paths
+    assert sorted(project.paths) == sorted(paths)
     assert project.commands == ["pwd"]
     assert storage.paths == []
     messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]

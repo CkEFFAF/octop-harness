@@ -1187,6 +1187,14 @@ class BackendWorkspace:
     ) -> list[str]:
         paths = [self._deepagents_source_path(DEFAULT_BUILTIN_SKILLS_DIR)]
         for fragment in self.system_read_roots(DEFAULT_SKILLS_DIR):
+            if self._system_files_path and fragment == DEFAULT_SKILLS_DIR:
+                legacy = self._deepagents_source_path(fragment, map_system_paths=False)
+                try:
+                    error = self._backend.ls(legacy).error
+                except FileNotFoundError:
+                    continue
+                if error and "path_not_found" in error:
+                    continue
             # Legacy workspace-root ``skills/`` must not pick up system_files_path.
             map_system = not (fragment == DEFAULT_SKILLS_DIR and bool(self._system_files_path))
             paths.append(self._deepagents_source_path(fragment, map_system_paths=map_system))
