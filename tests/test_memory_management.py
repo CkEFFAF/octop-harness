@@ -164,9 +164,32 @@ def test_corrected_entity_page_is_hidden_only_until_regenerated(memory: Memory) 
         updated_at=now,
     )
     memory.upsert_entity_page(page)
+    # create_atom already owns a page row; upsert preserves that row's ID.
+    page = memory.get_entity_page(entity.id)
+    assert page is not None and page.id != entity.id
     _MemoryManagement(memory).delete(f"atom/{old.id}.md", expected_content=old.assertion, reason="obsolete")
     service = _ManagedMemoryService(memory)
     assert service.get(f"page/{entity.id}.md").get("error")
+    stale = RecallResult(
+        snippets=[
+            RecallSnippet(
+                source_id=page.id,
+                timestamp_iso=now.isoformat(),
+                role_hint="atom:high",
+                text=page.headline,
+                layer="atom",
+            )
+        ],
+        rendered=page.headline,
+    )
+    with patch.object(MemoryService, "recall", return_value=stale):
+        assert service.recall("summary").rendered == ""
+    with patch.object(
+        MemoryService,
+        "search",
+        return_value={"hits": [{"layer": "atom", "source_id": page.id, "snippet": page.headline}]},
+    ):
+        assert service.search("summary")["hits"] == []
     memory.upsert_entity_page(replace(page, dirty=False, summary_markdown="fresh summary", headline="fresh summary"))
     assert "fresh summary" in service.get(f"page/{entity.id}.md")["excerpt"]
 

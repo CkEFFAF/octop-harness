@@ -80,6 +80,11 @@ class _MemoryManagement:
         for raw_id in {*atom.raw_event_ids, atom.quote_event_id} - {""}:
             self.memory.set_meta(_PREFIX + "raw:" + raw_id, atom.id)
         self.memory.set_meta(_PREFIX + "page:" + atom.entity_id, atom.id)
+        page = self.memory.get_entity_page(atom.entity_id)
+        if page is not None:
+            # RecallSnippet flattens page_headline to layer=atom and keeps
+            # page.id, whereas get_entity_page takes the entity ID.
+            self.memory.set_meta(_PREFIX + "page-id:" + page.id, atom.entity_id)
 
     def update(self, path: str, content: str, *, expected_content: str, reason: str) -> dict[str, Any]:
         content = self._text(content, "content")
@@ -114,8 +119,9 @@ class _MemoryManagement:
             # Recall projects entity page headlines onto the atom layer.
             kind = "page"
         if kind == "page":
-            page = self.memory.get_entity_page(source_id)
-            if page and page.dirty and self.memory.get_meta(_PREFIX + "page:" + source_id):
+            entity_id = self.memory.get_meta(_PREFIX + "page-id:" + source_id) or source_id
+            page = self.memory.get_entity_page(entity_id)
+            if page and page.dirty and self.memory.get_meta(_PREFIX + "page:" + entity_id):
                 return "This summary predates a correction; use current atom facts until it is regenerated."
         if kind == "raw":
             if self.memory.get_meta(_PREFIX + "raw:" + source_id):
