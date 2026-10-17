@@ -20,8 +20,6 @@ from typing import TYPE_CHECKING
 
 from langchain_core.tools import StructuredTool, tool
 
-from octop_harness.memory.management import _management_result
-
 if TYPE_CHECKING:
     from octop_memory import MemoryService
 
@@ -99,6 +97,10 @@ def build_memory_tools(service: MemoryService) -> list[StructuredTool]:
         return str(result)
 
     def manage(action: str, **kwargs: object) -> str:
+        # Import only when a tool runs: memory.__init__ also exposes the
+        # runtime that imports this module during graph construction.
+        from octop_harness.memory.management import _management_result
+
         try:
             return _management_result(service, action, **kwargs)
         except ValueError as exc:
