@@ -58,11 +58,12 @@ class TestMemoryIntegration:
             HarnessAgent(cfg)
 
         tool_names = [getattr(t, "name", "") for t in captured["tools"]]
-        # memory_save is intentionally not exposed; durable writes go through
-        # workspace markdown edits + idle distillation.
+        # Maintain fact atoms through the bounded maintenance tools; keep the
+        # obsolete memory_save/store/recall aliases absent.
         assert "memory_save" not in tool_names
         assert "memory_search" in tool_names
         assert "memory_get" in tool_names
+        assert {"memory_list", "memory_write", "memory_update", "memory_delete"} <= set(tool_names)
         assert "memory_store" not in tool_names
         assert "memory_recall" not in tool_names
 
@@ -112,6 +113,7 @@ class TestMemoryIntegration:
         assert mw_instances[0]._service is None
         assert mw_instances[0]._jsonl_enabled is True
         assert agent.memory is None
+        assert not any(getattr(tool, "name", "").startswith("memory_") for tool in captured["tools"])
 
     def test_default_sqlite_memory_db_is_workspace_scoped(self, tmp_path: Path) -> None:
         cfg = HarnessAgentConfig(

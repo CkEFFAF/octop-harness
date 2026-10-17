@@ -17,6 +17,7 @@ from octop_memory import Memory, MemoryService
 
 from octop_harness.builtin.tools.memory_tools import build_memory_tools
 from octop_harness.memory.llm_client import HarnessAgentLLMClient
+from octop_harness.memory.management import _ManagedMemoryService
 from octop_harness.memory.store import (
     MemoryIdentity,
     close_memory_resources,
@@ -61,7 +62,7 @@ class MemoryRuntime:
         if config.memory_enabled:
             self._memory = self._build_memory()
             self._llm_client = self._build_llm_client() if config.memory_aux_model_enabled else None
-            self._service = MemoryService(
+            self._service = _ManagedMemoryService(
                 self._memory,
                 llm=self._llm_client,
                 config=_extraction_service_config(config),

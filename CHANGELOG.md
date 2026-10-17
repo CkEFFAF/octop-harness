@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 新增
+
+- 记忆工具新增 `memory_list`、`memory_write`、`memory_update`、`memory_delete`，限定当前专家的事实卡；更正生成后继、删除执行停用，并保留审计和原始历史。更正要求匹配当前原文及提供原因，工具检索和新回合自动召回过滤失效事实、相关旧来源及待重建摘要。
+
 ### 修复
 
 - 专家资料按当前工作区授权，恢复管理端敏感主目录下的记忆文件读写，并将其与设备用户的系统权限分开。隐藏路径、递归搜索结果、目录删除、符号链接与 Windows 路径别名均受检查；认证、会话及已配置的数据库存储保持由管理端维护。缺失的可选旧技能目录不再产生加载噪音。

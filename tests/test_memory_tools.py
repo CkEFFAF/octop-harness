@@ -32,7 +32,14 @@ class _FakeService:
 class TestBuildMemoryTools:
     def test_returns_recall_tools(self) -> None:
         tools = build_memory_tools(_FakeService())  # type: ignore[arg-type]
-        assert {t.name for t in tools} == {"memory_search", "memory_get"}
+        assert {t.name for t in tools} == {
+            "memory_search",
+            "memory_get",
+            "memory_list",
+            "memory_write",
+            "memory_update",
+            "memory_delete",
+        }
 
     def test_memory_search_formats_hits(self) -> None:
         service = _FakeService()
