@@ -2046,7 +2046,12 @@ class HarnessAgent:
         Shared by ``call`` / ``stream`` / ``stream_events``.
         """
         req = ChatRequest.coerce(request)
-        return req.normalize_messages(), req.to_runnable_config(), self._get_protocol(protocol)
+        config = req.to_runnable_config()
+        config["metadata"] = {
+            **config.get("metadata", {}),
+            "harness_invocation_id": uuid.uuid4().hex,
+        }
+        return req.normalize_messages(), config, self._get_protocol(protocol)
 
     def _get_protocol(self, name: str | None) -> ChatProtocol:
         """Resolve a protocol by name (cached). ``None`` → config default."""
