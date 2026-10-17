@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from deepagents.backends.protocol import ExecuteResponse, ReadResult, SandboxBackendProtocol
+from deepagents.middleware.filesystem import FilesystemPermission
 from langchain_core.language_models.fake_chat_models import FakeListChatModel, FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -105,12 +106,60 @@ async def test_real_graph_preserves_native_windows_and_parent_paths(tmp_path: Pa
             result = await agent.graph.ainvoke(
                 {"messages": [HumanMessage("read target files")]}, {"configurable": {"thread_id": "native"}}
             )
-        assert backend.read_paths == paths
+        assert sorted(backend.read_paths) == sorted(paths)
         assert backend.commands == ["pwd"]
         tools = [message for message in result["messages"] if isinstance(message, ToolMessage)]
         assert len(tools) == 4
         assert all(
             "native content" in str(message.content) or "target cwd" in str(message.content) for message in tools
         )
+    finally:
+        agent.close()
+
+
+@pytest.mark.asyncio
+async def test_host_rooted_expert_memory_is_writable_without_using_device_identity(tmp_path: Path) -> None:
+    store, project = tmp_path / "controller" / "agent", tmp_path / "gpu"
+    store.mkdir(parents=True)
+    project.mkdir()
+    (store / "MEMORY.md").write_text("old fact", encoding="utf-8")
+    backend = NativeProbeBackend()
+    # The storage mount is broader than this expert, as in the production '/' mount.
+    memory_key = "/controller/agent/MEMORY.md"
+    calls = [
+        {"name": "read_file", "args": {"file_path": "/.agent" + memory_key}, "id": "read"},
+        {
+            "name": "edit_file",
+            "args": {"file_path": "/.agent" + memory_key, "old_string": "old fact", "new_string": "new fact"},
+            "id": "edit",
+        },
+    ]
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=calls[:1]),
+            AIMessage(content="", tool_calls=calls[1:]),
+            AIMessage(content="done"),
+        ]
+    )
+    cfg = replace(
+        config(store, project),
+        backend={"type": "filesystem", "root_dir": str(tmp_path), "virtual_mode": True},
+        execution_backend=backend,
+        permissions=[FilesystemPermission(operations=["read", "write"], paths=["/controller/**"], mode="deny")],
+        pii_enabled=False,
+        model_retry_enabled=False,
+    )
+    with patch("octop_harness.llm.factory.build_chat_model", return_value=model):
+        agent = HarnessAgent(cfg)
+    try:
+        with patch("octop_harness.middleware.model_router.ModelRouterMiddleware._select_model", return_value=model):
+            result = await agent.graph.ainvoke(
+                {"messages": [HumanMessage("remember the new fact")]}, {"configurable": {"thread_id": "memory"}}
+            )
+        messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        assert all(m.status != "error" for m in messages), messages
+        assert (store / "MEMORY.md").read_text(encoding="utf-8") == "new fact"
+        assert backend.read_paths == []
+        assert backend.commands == []
     finally:
         agent.close()

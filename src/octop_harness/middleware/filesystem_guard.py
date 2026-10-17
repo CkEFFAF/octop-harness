@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import re
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents.backends.utils import validate_path
 from deepagents.middleware.filesystem import FilesystemPermission
@@ -27,6 +28,9 @@ from langchain_core.messages.tool import ToolCall
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 from wcmatch import glob as wcglob
+
+if TYPE_CHECKING:
+    from octop_harness.backends.workspace import BackendWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +45,7 @@ _FS_TOOL_OPS: dict[str, Literal["read", "write"]] = {
     "edit_file": "write",
     "delete": "write",
 }
-_FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
+_FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR | wcglob.DOTGLOB
 
 _OUTSIDE_ROOT_REMEDIATION = (
     "The path is outside this agent's storage root. "
@@ -388,22 +392,193 @@ class FilesystemGuardMiddleware(AgentMiddleware[Any, Any]):
 
 
 class AgentStoreGuardMiddleware(FilesystemGuardMiddleware):
-    """Keep expert storage deny rules while device policy owns project paths."""
+    """Authorize expert content separately from the selected device's OS.
+
+    Storage keys can include a controller host path such as /root/agents/id.
+    That prefix identifies the expert, not the device user's permissions.
+    Rules inside the owned store use workspace relative paths. Explicit skill
+    source roots are readable, but do not grant write access outside the store.
+    Runtime databases, sessions and authentication remain host managed.
+    """
+
+    def __init__(
+        self,
+        permissions: list[FilesystemPermission] | None = None,
+        *,
+        workspace: BackendWorkspace | None = None,
+        read_roots: Iterable[str] = (),
+        runtime_paths: Iterable[str] = (),
+    ) -> None:
+        super().__init__(permissions)
+        self._workspace = workspace
+        from octop_harness.backends.utils import is_local_class_backend
+
+        backend: Any = workspace.backend if workspace else None
+        while getattr(backend, "default", None) is not None:
+            backend = backend.default
+        self._case_insensitive = os.name == "nt" and is_local_class_backend(backend)
+        self._store_root = workspace._deepagents_source_path(".").replace("\\", "/").rstrip("/") if workspace else ""
+        self._read_roots = tuple(root.replace("\\", "/").rstrip("/") for root in read_roots)
+        self._protected_paths = tuple(path.replace("\\", "/").rstrip("/") for path in runtime_paths)
+        prefixes = {""}
+        if workspace and workspace.system_files_path:
+            prefixes.add("/" + workspace.system_files_path.strip("/"))
+        self._runtime_dirs = (
+            "/.octop-auth",
+            *(prefix + name for prefix in prefixes for name in ("/auth", "/sessions")),
+        )
+        self._runtime_files = tuple(
+            prefix + name for prefix in prefixes for name in ("/.bootstrapped", "/checkpoints.sqlite", "/memory.sqlite")
+        )
+        if self._case_insensitive:
+            self._runtime_dirs = tuple(path.casefold() for path in self._runtime_dirs)
+            self._runtime_files = tuple(path.casefold() for path in self._runtime_files)
+
+    def _relative(self, path: str, root: str) -> str | None:
+        if not root:
+            return path
+        compared_path = path.casefold() if self._case_insensitive else path
+        compared_root = root.casefold() if self._case_insensitive else root
+        if compared_path == compared_root:
+            return "/"
+        if compared_path.startswith(compared_root + "/"):
+            return path[len(root) :]
+        return None
+
+    def _resolved_relative(self, path: str, root: str) -> str | None:
+        """Check symlinks against both the store boundary and logical rules."""
+        resolver = getattr(self._workspace.backend, "_resolve_path", None) if self._workspace else None
+        if not callable(resolver):
+            return self._relative(path, root)
+        try:
+            relative = Path(resolver(path)).resolve().relative_to(Path(resolver(root or "/")).resolve())
+        except (OSError, ValueError, RuntimeError):
+            return None
+        return "/" if relative == Path(".") else "/" + relative.as_posix()
+
+    def _runtime_path(self, path: str, *, recursive: bool) -> bool:
+        if self._case_insensitive:
+            path = path.casefold()
+        if any(path == root or path.startswith(root + "/") for root in self._runtime_dirs):
+            return True
+        if any(path == name or path.startswith(name + "-") for name in self._runtime_files):
+            return True
+        return recursive and any(root.startswith(path.rstrip("/") + "/") for root in self._runtime_dirs)
+
+    def _protected_storage_path(self, path: str, *, recursive: bool) -> bool:
+        if self._case_insensitive:
+            path = path.casefold()
+        for configured_root in self._protected_paths:
+            root = configured_root.casefold() if self._case_insensitive else configured_root
+            if path == root or path.startswith((root + "/", root + "-")):
+                return True
+            if recursive and root.startswith(path.rstrip("/") + "/"):
+                return True
+        return False
 
     def _rewrite_legacy_windows_request(self, request: ToolCallRequest) -> ToolCallRequest:
         return request
 
-    def _blocked_message(self, request: ToolCallRequest) -> ToolMessage | None:
+    def _content_policy_reason(self, name: str, logical: str, resolved: str) -> str | None:
+        candidates = {logical, resolved}
+        if self._case_insensitive and any(
+            part.endswith((".", " ")) or ":" in part for candidate in candidates for part in candidate.split("/")
+        ):
+            return "Windows storage paths must not use trailing dots, spaces or alternate data stream aliases"
+        if any(
+            self._runtime_path(candidate, recursive=_tool_base_name(name) in {"glob", "grep", "delete"})
+            for candidate in candidates
+        ):
+            return (
+                "host managed authentication, sessions and memory databases are not editable content; "
+                "use memory tools or a content directory"
+            )
+        # Preserve explicit rules written against this store's full key,
+        # while broad host paths (for example /root/**) stay host scoped.
+        rules = [
+            FilesystemPermission(
+                operations=rule.operations,
+                paths=[
+                    (self._relative(pattern, self._store_root) or pattern).casefold()
+                    if self._case_insensitive
+                    else self._relative(pattern, self._store_root) or pattern
+                    for pattern in rule.paths
+                ],
+                mode=rule.mode,
+            )
+            for rule in self._permissions
+        ]
+        for candidate in candidates:
+            reason = filesystem_guard_block_reason(
+                rules,
+                tool_name=name,
+                params={
+                    "path": candidate.casefold() if self._case_insensitive else candidate,
+                    "file_path": candidate.casefold() if self._case_insensitive else candidate,
+                },
+                native_paths=True,
+            )
+            if reason:
+                return reason
+        return None
+
+    def storage_block_reason(self, name: str, path: str) -> str | None:
+        """Authorize one model visible content path, including search results."""
         from octop_harness.backends.execution import AGENT_STORE_PREFIX
 
-        name, call_id = _tool_call_meta(request)
-        args = dict(request.tool_call.get("args") or {})
-        path = _path_from_tool_args(name, args)
-        if not path or not path.startswith(AGENT_STORE_PREFIX):
+        if path != AGENT_STORE_PREFIX.rstrip("/") and not path.startswith(AGENT_STORE_PREFIX):
             return None
-        key = "file_path" if "file_path" in args else "path"
-        args[key] = path[len(AGENT_STORE_PREFIX) - 1 :]
-        reason = filesystem_guard_block_reason(self._permissions, tool_name=name, params=args, native_paths=True)
+        storage_path = path[len(AGENT_STORE_PREFIX) - 1 :].replace("\\", "/") or "/"
+        if self._workspace is None:
+            return filesystem_guard_block_reason(
+                self._permissions,
+                tool_name=name,
+                params={"path": storage_path, "file_path": storage_path},
+                native_paths=True,
+            )
+
+        reason = None
+        logical = self._relative(storage_path, self._store_root)
+        root = self._store_root
+        if (
+            ".." in storage_path.split("/")
+            or storage_path.startswith("//")
+            or posixpath.normpath(storage_path) != (storage_path.rstrip("/") or "/")
+        ):
+            reason = "path must be normalized and stay inside this expert's storage"
+        elif logical is None:
+            source = next(
+                (source for source in self._read_roots if self._relative(storage_path, source) is not None), None
+            )
+            if source is None or _FS_TOOL_OPS.get(_tool_base_name(name)) != "read":
+                reason = "path is outside this expert's writable storage and approved skill sources"
+            else:
+                root, logical = source, self._relative(storage_path, source)
+        resolved = self._resolved_relative(storage_path, root) if reason is None else None
+        if reason is None and resolved is None:
+            reason = "storage path resolves outside its approved root"
+        if (
+            reason is None
+            and resolved is not None
+            and any(
+                self._protected_storage_path(candidate, recursive=_tool_base_name(name) in {"glob", "grep", "delete"})
+                for candidate in (storage_path, root + resolved)
+            )
+        ):
+            reason = "path contains configured host runtime persistence"
+        if reason is None and logical is not None and resolved is not None:
+            reason = self._content_policy_reason(name, logical, resolved)
+        if reason is not None:
+            reason = (
+                f"Error: expert storage policy denied {name} on {path}: {reason}. "
+                "This is controller storage, not a device OS permission error."
+            )
+        return reason
+
+    def _blocked_message(self, request: ToolCallRequest) -> ToolMessage | None:
+        name, call_id = _tool_call_meta(request)
+        path = _path_from_tool_args(name, dict(request.tool_call.get("args") or {}))
+        reason = self.storage_block_reason(name, path) if path else None
         return ToolMessage(content=reason, name=name, tool_call_id=call_id, status="error") if reason else None
 
 

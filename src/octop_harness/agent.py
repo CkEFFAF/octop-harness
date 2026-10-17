@@ -1515,7 +1515,7 @@ class HarnessAgent:
         # deny rules only when permissions are set on an execution backend.
         from octop_harness.middleware.filesystem_guard import FilesystemGuardMiddleware
 
-        fs_permissions = list(cfg.permissions) if cfg.permissions and spec_supports_execution(cfg.backend) else []
+        fs_permissions = list(cfg.permissions or [])
         root_dir, _virtual = self._peek_backend_mount()
         chain.append(
             FilesystemGuardMiddleware(
@@ -1796,6 +1796,28 @@ class HarnessAgent:
         self._apply_execution_graph_inputs(kwargs)
         return self._create_deep_graph(kwargs)
 
+    def _execution_runtime_paths(self) -> list[str]:
+        """Storage keys for configured local persistence, never model content."""
+        from octop_harness.memory.store import memory_identity
+
+        paths: list[str | Path] = [
+            value for value in (self._config.session_log_dir, self._config.memory_jsonl_dir) if value is not None
+        ]
+        identity = memory_identity(self._config, self._workspace_path)
+        if identity is not None and identity.backend == "sqlite":
+            paths.append(identity.location)
+        keys = []
+        for value in paths:
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = self._workspace_path / path
+            try:
+                fragment = path.resolve().relative_to(self._workspace_path.resolve()).as_posix()
+            except ValueError:
+                fragment = str(path.resolve())
+            keys.append(self._workspace._deepagents_source_path(fragment, map_system_paths=False))
+        return keys
+
     def _apply_execution_graph_inputs(self, kwargs: dict[str, Any]) -> None:
         """Address expert materials separately from project-native paths."""
         if self._config.execution_backend is None:
@@ -1804,16 +1826,30 @@ class HarnessAgent:
         from octop_harness.middleware.filesystem_guard import AgentStoreGuardMiddleware
         from octop_harness.middleware.native_filesystem import NativeFilesystemMiddleware
 
+        # The composed backend supports execution even if the storage spec does
+        # not. Storage permissions are enforced by AgentStoreGuardMiddleware.
+        kwargs.pop("permissions", None)
+        storage_guard = AgentStoreGuardMiddleware(
+            list(self._config.permissions or []),
+            workspace=self._workspace,
+            read_roots=kwargs.get("skills", []),
+            runtime_paths=self._execution_runtime_paths(),
+        )
         kwargs["middleware"] = [
             *[mw for mw in kwargs["middleware"] if mw.__class__.__name__ != "FilesystemGuardMiddleware"],
-            AgentStoreGuardMiddleware(list(self._config.permissions or [])),
-            NativeFilesystemMiddleware(self._backend),
+            storage_guard,
+            NativeFilesystemMiddleware(self._backend, storage_guard=storage_guard),
         ]
 
         kwargs["system_prompt"] = (
             (self._config.system_prompt or "").rstrip()
             + "\n\nProject tools use the runtime execution target. Its working directory is a default, "
-            "not a filesystem restriction. Expert materials use the explicit /.agent/ storage namespace.\n\n"
+            "not a filesystem restriction. Expert materials use the explicit /.agent/ storage namespace. "
+            "That namespace is served by the controller's storage backend, which may be on another machine. "
+            "The selected device's shell user and OS permissions do not determine access to expert storage. "
+            "Use file tools for expert materials and never diagnose their access with device shell commands. "
+            "Memory files can be edited and read back; memory_search/memory_get retrieve extracted memories. "
+            "A note file alone does not guarantee automatic recall in a new conversation.\n\n"
             + render_slash_skill_prompt(language=self._config.language)
         ).strip()
         if self._config.media_generation is None or not self._config.media_generation.has_api_key():
@@ -1823,10 +1859,16 @@ class HarnessAgent:
         for spec in kwargs.get("subagents", []):
             if "runnable" in spec or spec.get("type") == "remote":
                 continue
+            subagent_guard = AgentStoreGuardMiddleware(
+                list(self._config.permissions or []),
+                workspace=self._workspace,
+                read_roots=[*kwargs.get("skills", []), *spec.get("skills", [])],
+                runtime_paths=self._execution_runtime_paths(),
+            )
             spec["middleware"] = [
                 *(spec.get("middleware") or []),
-                AgentStoreGuardMiddleware(list(self._config.permissions or [])),
-                NativeFilesystemMiddleware(self._backend),
+                subagent_guard,
+                NativeFilesystemMiddleware(self._backend, storage_guard=subagent_guard),
             ]
             for key in ("skills", "memory"):
                 if key in spec:
