@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncGenerator
 from enum import StrEnum
 from typing import Any
@@ -141,6 +142,7 @@ class LangGraphProtocol(ChatProtocol):
         **kwargs: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         splitter = ThinkSplitter()
+        invocation_id = (config.get("metadata") or {}).get("harness_invocation_id")
         async for chunk in self._graph.astream(
             {"messages": messages},
             config=config,
@@ -148,7 +150,7 @@ class LangGraphProtocol(ChatProtocol):
             version="v2",
             **kwargs,
         ):
-            for event in self._project_chunk(chunk, splitter):
+            for event in self._project_chunk(chunk, splitter, invocation_id):
                 yield event
         for event in self._drain_splitter(splitter):
             yield event
@@ -164,6 +166,8 @@ class LangGraphProtocol(ChatProtocol):
         configurable = dict(merged_config.get("configurable") or {})
         configurable["thread_id"] = thread_id
         merged_config["configurable"] = configurable
+        invocation_id = uuid.uuid4().hex
+        merged_config["metadata"] = {**(merged_config.get("metadata") or {}), "harness_invocation_id": invocation_id}
 
         splitter = ThinkSplitter()
         async for chunk in self._graph.astream(
@@ -173,7 +177,7 @@ class LangGraphProtocol(ChatProtocol):
             version="v2",
             **kwargs,
         ):
-            for event in self._project_chunk(chunk, splitter):
+            for event in self._project_chunk(chunk, splitter, invocation_id):
                 yield event
         for event in self._drain_splitter(splitter):
             yield event
@@ -249,10 +253,19 @@ class LangGraphProtocol(ChatProtocol):
                 out.append({"type": AgentEventType.STATE_UPDATE, "node": node_name, "data": node_data})
         return out
 
-    def _project_chunk(self, chunk: dict[str, Any], splitter: ThinkSplitter) -> list[dict[str, Any]]:
+    def _project_chunk(
+        self, chunk: dict[str, Any], splitter: ThinkSplitter, invocation_id: str | None = None
+    ) -> list[dict[str, Any]]:
         event_type = chunk["type"]
         data = chunk["data"]
         if event_type == "messages":
+            # Nested peer agents execute inside the parent's tool node. Their
+            # callback tokens are visible to LangGraph's parent message stream,
+            # but belong in the tool result, never the parent's final answer.
+            metadata = data[1]
+            child_id = metadata.get("harness_invocation_id") if isinstance(metadata, dict) else None
+            if invocation_id and child_id and child_id != invocation_id:
+                return []
             return self._project_messages_chunk(data, splitter)
         if event_type == "updates":
             return self._project_updates_chunk(data)
