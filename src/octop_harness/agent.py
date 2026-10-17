@@ -1849,6 +1849,10 @@ class HarnessAgent:
             "The selected device's shell user and OS permissions do not determine access to expert storage. "
             "Use file tools for expert materials and never diagnose their access with device shell commands. "
             "Memory files can be edited and read back; memory_search/memory_get retrieve extracted memories. "
+            "Use memory_list/write/update/delete to maintain your own structured facts; update creates a successor "
+            "and delete retires a fact with an audit trail. Read the exact current assertion before correcting it, "
+            "provide the verified reason and date, and read back the new path. "
+            "Raw history remains historical evidence, not current truth. "
             "A note file alone does not guarantee automatic recall in a new conversation.\n\n"
             + render_slash_skill_prompt(language=self._config.language)
         ).strip()

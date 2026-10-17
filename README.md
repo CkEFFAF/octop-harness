@@ -123,6 +123,15 @@ octop-harness is a library (not an app) that turns deepagents into a deployable 
 - 17 user-editable provider presets, including Hunyuan, Kimi, GLM, DeepSeek, MiniMax, and Moonshot.
 
 #### Memory (tiered)
+- Memory-enabled agents expose `memory_search`, `memory_get`, `memory_list`,
+  `memory_write`, `memory_update`, and `memory_delete`. Writes use the agent's
+  bound namespace. Update/delete require an `atom/<id>.md` path, the exact
+  current assertion (`expected_content`), and a verified reason. Update creates
+  a successor; delete retires the fact without erasing history. The returned
+  path can be read back to verify a correction.
+- Corrected facts, their retired raw evidence and affected summaries awaiting
+  regeneration are excluded from new agent recall. Raw evidence remains in
+  host audit/history; existing conversation/checkpoint messages are preserved.
 - Each turn is captured as **L0 raw events**, then distilled asynchronously into **L2 atoms** (`AtomCard`s) and **L3 entity pages**.
 - Powered by the octop-memory middleware; memory travels with the workspace.
 - Recall is frozen once per user turn and appended to the model-facing user message,

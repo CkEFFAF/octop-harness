@@ -587,7 +587,14 @@ class TestMemoryMiddlewareWithService:
 class TestMemoryTools:
     def test_returns_recall_tools(self, service: MemoryService) -> None:
         tools = build_memory_tools(service)
-        assert {t.name for t in tools} == {"memory_search", "memory_get"}
+        assert {t.name for t in tools} == {
+            "memory_search",
+            "memory_get",
+            "memory_list",
+            "memory_write",
+            "memory_update",
+            "memory_delete",
+        }
 
     def test_memory_search_empty(self, service: MemoryService) -> None:
         tools = build_memory_tools(service)
