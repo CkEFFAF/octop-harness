@@ -164,7 +164,7 @@ async def test_submit_peer_requires_team(tmp_path: Path) -> None:
 
     assert mgr.team.enabled is False
     with pytest.raises(RuntimeError):
-        mgr.team.submit_peer(
+        await mgr.team.asubmit_peer(
             from_agent_id="main",
             to_agent_id="child",
             message="x",
@@ -194,7 +194,7 @@ async def test_submit_peer_enqueues_and_pushes(tmp_path: Path) -> None:
         mgr.create_agent(_config(tmp_path / "b"), agent_id="child", metadata={"user_id": 1})
 
     assert mgr.team.enabled is True
-    result = mgr.team.submit_peer(
+    result = await mgr.team.asubmit_peer(
         from_agent_id="main",
         to_agent_id="child",
         message="long task",
@@ -250,7 +250,7 @@ def test_derive_peer_thread_id_appends_and_replaces() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_peer_uses_stable_derived_thread_id(tmp_path: Path) -> None:
+async def test_call_peer_isolates_invocation_thread_and_session(tmp_path: Path) -> None:
     mock_agent = MagicMock()
     mock_agent.init_workspace.return_value = MagicMock()
     mock_agent.call = AsyncMock(return_value={"messages": [{"role": "assistant", "content": "ok"}]})
@@ -276,10 +276,11 @@ async def test_call_peer_uses_stable_derived_thread_id(tmp_path: Path) -> None:
         session_key="main:dashboard:7:dm",
     )
     req = mock_agent.call.await_args_list[0].args[0]
-    assert first.thread_id == "thr_src~peer-b"
-    assert second.thread_id == first.thread_id
-    assert req.thread_id == "thr_src~peer-b"
-    assert req.configurable["session_key"] == "main:dashboard:7:dm"
+    assert first.thread_id == f"thr_src~peer-b~{first.invocation_id}"
+    assert second.thread_id == f"thr_src~peer-b~{second.invocation_id}"
+    assert second.thread_id != first.thread_id
+    assert req.thread_id == first.thread_id
+    assert req.configurable["session_key"] == f"main:dashboard:7:dm~{first.invocation_id}"
 
 
 @pytest.mark.asyncio

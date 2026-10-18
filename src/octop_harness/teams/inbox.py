@@ -23,6 +23,7 @@ from typing import Any, Literal
 from octop_harness.backends.utils import ASYNC_DEFENSIVE_OP_ERRORS
 from octop_harness.messages import extract_call_response, is_model_retry_failure_text
 from octop_harness.request import ChatRequest
+from octop_harness.teams.dispatch import DispatchOptions, DispatchReceipt
 from octop_harness.teams.processor import ReplyEvent, TeamProcessor
 from octop_harness.teams.util import build_one_shot_request, derive_peer_thread_id
 
@@ -50,6 +51,11 @@ class InboxMessage:
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
     metadata: dict[str, Any] = field(default_factory=dict)
     result_status: Literal["done", "failed", "cancelled"] | None = None
+    invocation_id: str = ""
+    dispatch_options: DispatchOptions = field(default_factory=DispatchOptions)
+    accepted: bool = False
+    receipt: DispatchReceipt | None = None
+    retry_of: str | None = None
 
 
 @dataclass
@@ -64,6 +70,8 @@ class PeerResult:
     status: str | None = None
     response: str | None = None
     message: str | None = None
+    invocation_id: str = ""
+    receipt: DispatchReceipt | None = None
 
 
 class HarnessAgentInboxManager:
@@ -76,6 +84,7 @@ class HarnessAgentInboxManager:
         processor: TeamProcessor,
         invoke_target: Callable[[InboxMessage], Awaitable[dict[str, Any]]] | None = None,
         max_concurrency: int = DEFAULT_INBOX_MAX_CONCURRENCY,
+        observe_terminal: Callable[[InboxMessage, str], Awaitable[None]] | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError(f"max_concurrency must be at least 1, got {max_concurrency!r}")
@@ -88,11 +97,13 @@ class HarnessAgentInboxManager:
         self._worker: asyncio.Task[None] | None = None
         self._semaphore: asyncio.Semaphore | None = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._started_jobs: set[str] = set()
         self._target_locks: dict[str, asyncio.Lock] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
         self._target_refs: dict[str, int] = {}
         self._source_refs: dict[str, int] = {}
         self._result_observer: Callable[[InboxMessage, str], None] | None = None
+        self._observe_terminal = observe_terminal
 
     def bind_result_observer(self, observer: Callable[[InboxMessage, str], None] | None) -> None:
         """Observe the actual child outcome before parent integration begins.
@@ -127,6 +138,10 @@ class HarnessAgentInboxManager:
         original_user_prompt: str | None = None,
         job_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        invocation_id: str = "",
+        dispatch_options: DispatchOptions | None = None,
+        accepted: bool = False,
+        retry_of: str | None = None,
     ) -> str:
         """Add a message to the inbox and return its id (returns immediately)."""
         self.start()
@@ -140,6 +155,10 @@ class HarnessAgentInboxManager:
             user_id=user_id,
             original_user_prompt=original_user_prompt,
             metadata=dict(metadata or {}),
+            invocation_id=invocation_id,
+            dispatch_options=dispatch_options or DispatchOptions(),
+            accepted=accepted,
+            retry_of=retry_of,
         )
         self._queue.put_nowait(mid)
         return mid
@@ -167,6 +186,9 @@ class HarnessAgentInboxManager:
         if msg is None or msg.status in _TERMINAL_STATUSES:
             return False
         self._set_status(msg, "cancelled")
+        task = self._tasks.get(inbox_id)
+        if task is not None and inbox_id in self._started_jobs:
+            task.cancel()
         return True
 
     # ------------------------------------------------------------------
@@ -194,9 +216,25 @@ class HarnessAgentInboxManager:
         if self._worker is not None and not self._worker.done():
             self._worker.cancel()
         self._worker = None
-        for task in list(self._tasks.values()):
+        for mid, task in list(self._tasks.items()):
             if not task.done():
-                task.cancel()
+                if mid in self._started_jobs:
+                    task.cancel()
+                elif mid in self._messages:
+                    self._set_status(self._messages[mid], "cancelled")
+        # Requests accepted before the dispatcher got CPU still need a terminal
+        # observation. They cannot be left looking runnable after shutdown.
+        for msg in list(self._messages.values()):
+            if msg.id not in self._tasks and msg.status not in _TERMINAL_STATUSES:
+                self._set_status(msg, "cancelled")
+                task = asyncio.create_task(self._finish(msg, status="cancelled", reply_text=None, error_text=None))
+                self._tasks[msg.id] = task
+                task.add_done_callback(self._discard_finished_task)
+
+    def _discard_finished_task(self, finished: asyncio.Task[None]) -> None:
+        for mid, task in list(self._tasks.items()):
+            if task is finished:
+                self._tasks.pop(mid, None)
 
     # ------------------------------------------------------------------
     # Worker
@@ -255,23 +293,40 @@ class HarnessAgentInboxManager:
                 self._queue.task_done()
 
     async def _run_job(self, msg: InboxMessage) -> None:
-        async with self._sema():
-            try:
+        self._started_jobs.add(msg.id)
+        try:
+            async with self._sema():
                 await self._process(msg)
-            except ASYNC_DEFENSIVE_OP_ERRORS:
-                logger.exception("inbox message failed id=%s", msg.id)
-                if msg.status not in _TERMINAL_STATUSES:
-                    await self._finish(
-                        msg,
-                        status="failed",
-                        reply_text=None,
-                        error_text=msg.error_text or "inbox job failed",
-                    )
-            finally:
-                self._tasks.pop(msg.id, None)
+        except asyncio.CancelledError:
+            await self._finish(msg, status="cancelled", reply_text=None, error_text=None)
+        except ASYNC_DEFENSIVE_OP_ERRORS:
+            logger.exception("inbox message failed id=%s", msg.id)
+            if msg.id in self._messages:
+                await self._finish(
+                    msg, status="failed", reply_text=None, error_text=msg.error_text or "inbox job failed"
+                )
+        finally:
+            self._started_jobs.discard(msg.id)
+            self._tasks.pop(msg.id, None)
 
     def _is_cancelled(self, msg: InboxMessage) -> bool:
         return msg.status == "cancelled"
+
+    async def _call_target(self, msg: InboxMessage) -> dict[str, Any]:
+        if self._invoke_target is not None:
+            return await self._invoke_target(msg)
+        sk_raw = msg.metadata.get("session_key")
+        request = build_one_shot_request(
+            user_id=msg.user_id,
+            agent_id=msg.target_agent_id,
+            text=msg.message,
+            source="inbox",
+            thread_id=derive_peer_thread_id(msg.source_thread_id, msg.target_agent_id)
+            if msg.source_thread_id
+            else None,
+            session_key=sk_raw if isinstance(sk_raw, str) and sk_raw.strip() else None,
+        )
+        return await self._call_agent(msg.target_agent_id, request)
 
     async def _process(self, msg: InboxMessage) -> None:
         if self._is_cancelled(msg):
@@ -288,29 +343,14 @@ class HarnessAgentInboxManager:
                     return
                 self._set_status(msg, "running")
                 try:
-                    if self._invoke_target is not None:
-                        result = await self._invoke_target(msg)
-                    else:
-                        sk_raw = msg.metadata.get("session_key")
-                        session_key = sk_raw if isinstance(sk_raw, str) and sk_raw.strip() else None
-                        target_req = build_one_shot_request(
-                            user_id=msg.user_id,
-                            agent_id=msg.target_agent_id,
-                            text=msg.message,
-                            source="inbox",
-                            thread_id=(
-                                derive_peer_thread_id(msg.source_thread_id, msg.target_agent_id)
-                                if msg.source_thread_id
-                                else None
-                            ),
-                            session_key=session_key,
-                        )
-                        result = await self._call_agent(msg.target_agent_id, target_req)
+                    result = await self._call_target(msg)
                     result_text = extract_call_response(result) if isinstance(result, dict) else ""
                     if is_model_retry_failure_text(result_text):
                         status = "failed"
                         error_text = result_text
                         result_text = None
+                except asyncio.CancelledError:
+                    self._set_status(msg, "cancelled")
                 except ASYNC_DEFENSIVE_OP_ERRORS as exc:
                     error_text = str(exc)
                     status = "failed"
@@ -353,6 +393,8 @@ class HarnessAgentInboxManager:
             return
         self._publish_result(msg, status)
         msg.error_text = error_text
+        if self._observe_terminal is not None:
+            await self._observe_terminal(msg, status)
         self._set_status(msg, status)
         try:
             await self._processor.on_reply(

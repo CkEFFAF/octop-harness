@@ -199,6 +199,29 @@ custom adapter without adding arbitrary protocol or authentication fields to dec
 - **Teams** peer inbox for agent-to-agent messaging. ``peer_invoke_mode``
   selects the ``ask_agent`` surface (``sync`` / ``async`` / ``both``);
   request-scoped overrides may tighten it but cannot add background dispatch.
+  All surfaces validate the same dispatch fields and reject unknown arguments.
+  `DispatchOptions` defaults to `target_policy="member_default"`; choose
+  `inherit` deliberately, or `explicit` with `device_id` / `target_kind="local"`.
+  A host must authorize target and resource requests. Up to 32 unique registered
+  `resource_ids` request bounded access; paths and owner claims grant nothing.
+  `DispatchReceipt` separates transport status from `task_outcome` (unknown
+  unless a structured result supplies it) and identifies the actual resolved
+  target, invocation and child thread. Host `bind_peer_session(prepare=...,
+  lifecycle=...)` hooks persist acceptance before execution and resolve the
+  session; an accepted callback returning an existing receipt skips replay.
+  `call_peer` and awaited `asubmit_peer` accept a trusted `invocation_key` for
+  idempotency and `retry_of` for a host-authorized new attempt. Real tools use
+  the injected runtime tool-call ID; each invocation has an isolated fallback
+  child thread/session, and sync calls keep `job_id=None`.
+  The obsolete synchronous `submit_peer` fails with `use await asubmit_peer`.
+  `await team.acancel_peer(invocation_id)` persists a cancellation request
+  before interrupting queued or active sync/background work. A task cancelled
+  after entering the child reports unknown until its executor confirms the
+  external work stopped; a late request preserves an already completed result.
+  The runtime retains at most 256 completed full results when a lifecycle host
+  is bound; older replay uses the host's durable receipt. Without that host,
+  compact fingerprint/receipt tombstones remain for the manager's lifetime
+  after large result bodies are released, so old keys still cannot execute again.
 - **ACP** stdio server so external IDE / terminal AIs can invoke your agent.
 
 #### Safety

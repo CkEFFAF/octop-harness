@@ -27,8 +27,12 @@ if TYPE_CHECKING:
     )
     from octop_harness.protocols.langgraph import AgentEventType
     from octop_harness.providers import ModelPreset, ProviderPreset
+    from octop_harness.teams.dispatch import DispatchOptions, DispatchReceipt, PeerDispatchError
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "DispatchOptions": ("octop_harness.teams.dispatch", "DispatchOptions"),
+    "DispatchReceipt": ("octop_harness.teams.dispatch", "DispatchReceipt"),
+    "PeerDispatchError": ("octop_harness.teams.dispatch", "PeerDispatchError"),
     "RunEventCallback": ("octop_harness.observability.run_events", "RunEventCallback"),
     "AgentEntry": ("octop_harness.manager", "AgentEntry"),
     "HarnessAgentManager": ("octop_harness.manager", "HarnessAgentManager"),
@@ -63,6 +67,8 @@ __all__ = [
     "AgentEventType",
     "ChatProtocol",
     "ChatRequest",
+    "DispatchOptions",
+    "DispatchReceipt",
     "HarnessAgent",
     "HarnessAgentConfig",
     "HarnessAgentManager",
@@ -71,6 +77,7 @@ __all__ = [
     "MediaProviderConfig",
     "ModelConfig",
     "ModelPreset",
+    "PeerDispatchError",
     "ProviderConfig",
     "ProviderPreset",
     "RequestSnapshotCallback",

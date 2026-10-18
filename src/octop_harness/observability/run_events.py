@@ -58,6 +58,25 @@ def _source_url(value: Any) -> str | None:
         return None
 
 
+def _dispatch_status(name: str, parsed: Any, status: str, values: dict[str, Any]) -> str:
+    if name != "ask_agent" or not isinstance(parsed, dict):
+        return status
+    receipt = parsed.get("dispatch_receipt")
+    if not isinstance(receipt, dict):
+        return status
+    for key in ("invocation_id", "task_outcome", "error_code", "retryable", "child_thread_id"):
+        if key in receipt:
+            values[key] = receipt[key]
+    transport = receipt.get("transport_status")
+    if transport == "running":
+        return "accepted"
+    return (
+        transport
+        if isinstance(transport, str) and transport in {"accepted", "completed", "failed", "cancelled", "unknown"}
+        else status
+    )
+
+
 def _retrieved_urls(value: Any) -> list[str]:
     found: set[str] = set()
     pending = [value]
@@ -168,7 +187,7 @@ class RunEventCallback(BaseCallbackHandler):
                 values["source_urls"] = sorted(urls)[:20]
         elif name in _SOURCE_TOOLS:
             values["source_urls"] = []
-        self._finish(run_id, status, **values)
+        self._finish(run_id, _dispatch_status(name, parsed, status, values), **values)
 
     def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         self._finish(

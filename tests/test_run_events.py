@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -9,6 +10,31 @@ from langgraph.config import var_child_runnable_config
 
 from octop_harness.config import HarnessAgentConfig
 from octop_harness.observability import RunEventCallback
+
+
+@pytest.mark.parametrize("transport", ["accepted", "completed", "failed", "cancelled", "unknown"])
+def test_dispatch_receipt_retains_transport_and_distinct_task_outcome(transport: str) -> None:
+    events: list[dict[str, Any]] = []
+    callback = RunEventCallback(events.append)
+    identity = uuid4()
+    callback.on_tool_start({"name": "ask_agent"}, "", run_id=identity, inputs={"mode": "background"})
+    callback.on_tool_end(
+        json.dumps(
+            {
+                "dispatch_receipt": {
+                    "invocation_id": "peer-invocation",
+                    "transport_status": transport,
+                    "task_outcome": "blocked",
+                    "child_thread_id": "child",
+                    "retryable": False,
+                }
+            }
+        ),
+        run_id=identity,
+    )
+    assert events[-1]["status"] == transport
+    assert events[-1]["payload"]["task_outcome"] == "blocked"
+    assert events[-1]["payload"]["invocation_id"] == "peer-invocation"
 
 
 @pytest.mark.asyncio

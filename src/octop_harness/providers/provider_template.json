@@ -2212,7 +2212,7 @@
   {
     "id": "opencode-go-openai",
     "name": "OpenCode Go (Compatible)",
-    "base_url": "https://opencode.ai/inference/go/v1",
+    "base_url": "https://opencode.ai/inference/go/openai/v1",
     "protocol": "openai",
     "api_key_env": "OPENCODE_API_KEY",
     "api_key_prefix": "sk-",
@@ -2344,6 +2344,26 @@
       {
         "id": "hy3",
         "name": "Hy3"
+      },
+      {
+        "id": "hy4-preview",
+        "name": "Hy4 preview"
+      },
+      {
+        "id": "space-bunny",
+        "name": "Space Bunny"
+      },
+      {
+        "id": "longcat-2.5-preview-free",
+        "name": "LongCat 2.5 Preview Free"
+      },
+      {
+        "id": "step-5-preview",
+        "name": "Step 5 Preview"
+      },
+      {
+        "id": "beam-free",
+        "name": "Beam Free"
       }
     ],
     "vendor": "opencode",
@@ -2353,7 +2373,7 @@
   {
     "id": "opencode-go-anthropic",
     "name": "OpenCode Go (Anthropic)",
-    "base_url": "https://opencode.ai/inference/go",
+    "base_url": "https://opencode.ai/inference/go/anthropic",
     "protocol": "anthropic",
     "api_key_env": "OPENCODE_API_KEY",
     "api_key_prefix": "sk-",
@@ -2373,7 +2393,9 @@
       },
       {
         "id": "qwen3.7-plus",
-        "name": "Qwen 3.7 Plus"
+        "name": "Qwen 3.7 Plus",
+        "max_input_tokens": 1000000,
+        "max_output_tokens": 65536
       },
       {
         "id": "minimax-m3",
@@ -2392,12 +2414,6 @@
       {
         "id": "qwen3.7-max",
         "name": "Qwen3.7 Max",
-        "max_input_tokens": 1000000,
-        "max_output_tokens": 65536
-      },
-      {
-        "id": "qwen3.7-plus",
-        "name": "Qwen3.7 Plus",
         "max_input_tokens": 1000000,
         "max_output_tokens": 65536
       },
