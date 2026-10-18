@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from octop_harness.request import ChatRequest
+from octop_harness.teams.dispatch import DispatchOptions, DispatchReceipt
 
 _PEER_THREAD_SEP = "~"
 
@@ -96,6 +97,9 @@ class PeerCall:
     source_thread_id: str | None
     source_session_key: str | None
     job_id: str | None = None
+    invocation_id: str = ""
+    dispatch_options: DispatchOptions = field(default_factory=DispatchOptions)
+    retry_of: str | None = None
 
 
 @dataclass
@@ -111,6 +115,7 @@ class PeerSession:
     session_key: str | None = None
     configurable: dict[str, Any] | None = None
     message: str | None = None
+    receipt: DispatchReceipt | None = None
 
 
 def build_one_shot_request(
@@ -145,6 +150,8 @@ def build_one_shot_request(
 __all__ = [
     "PEER_IDENTITY_CONFIG_KEYS",
     "PEER_INVOKE_MODES",
+    "DispatchOptions",
+    "DispatchReceipt",
     "PeerCall",
     "PeerInvokeMode",
     "PeerSession",

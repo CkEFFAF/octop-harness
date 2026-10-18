@@ -368,10 +368,26 @@ class TestCoreProviderPresets:
 
         go_oai = presets["opencode-go-openai"]
         assert go_oai.protocol == "openai"
-        assert go_oai.base_url == "https://opencode.ai/inference/go/v1"
+        assert go_oai.base_url == "https://opencode.ai/inference/go/openai/v1"
         assert go_oai.variant == "go_compatible"
         assert any(m.id == "deepseek-v4-flash" for m in go_oai.models)
-        assert {"deepseek-v4.1-flash", "grok-4.7", "glm-5.3", "gpt-6-luna"} <= {m.id for m in go_oai.models}
+        assert {
+            "deepseek-v4.1-flash",
+            "grok-4.7",
+            "glm-5.3",
+            "gpt-6-luna",
+            "mimo-v2.6-pro",
+            "mimo-v2.6-flash",
+            "hy4-preview",
+            "space-bunny",
+            "longcat-2.5-preview-free",
+            "step-5-preview",
+            "beam-free",
+        } <= {m.id for m in go_oai.models}
+        assert len(go_oai.models) == len({m.id for m in go_oai.models})
+        for model_id in ("mimo-v2.6-pro", "mimo-v2.6-flash"):
+            assert next(m for m in go_oai.models if m.id == model_id).use_responses_api is False
+        assert not any(m.id.startswith("gemini-") for m in go_oai.models)
         # The discovery endpoint does not publish context limits for these IDs.
         assert next(m for m in go_oai.models if m.id == "grok-4.7").context_window == 0
         assert next(m for m in go_oai.models if m.id == "grok-4.7").use_responses_api is True
@@ -379,10 +395,12 @@ class TestCoreProviderPresets:
 
         go_ant = presets["opencode-go-anthropic"]
         assert go_ant.protocol == "anthropic"
-        assert go_ant.base_url == "https://opencode.ai/inference/go"
+        assert go_ant.base_url == "https://opencode.ai/inference/go/anthropic"
         assert go_ant.variant == "go_anthropic"
         assert any(m.id == "minimax-m3" for m in go_ant.models)
         assert {"claude-haiku-5-5", "qwen3.8-max"} <= {m.id for m in go_ant.models}
+        assert len(go_ant.models) == len({m.id for m in go_ant.models})
+        assert not any(m.id.startswith(("mimo-", "gemini-")) for m in go_ant.models)
 
 
 class TestProviderPresetPublicExport:

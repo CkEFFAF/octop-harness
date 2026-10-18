@@ -8,13 +8,15 @@ Mounted by :class:`~octop_harness.middleware.peer.PeerAgentMiddleware` when
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.config import get_config
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from langgraph.prebuilt import ToolRuntime
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from octop_harness.backends.utils import DEFENSIVE_OP_ERRORS
+from octop_harness.teams.dispatch import DispatchOptions, PeerDispatchError, TargetPolicy
 from octop_harness.teams.profile import peer_description, peer_guidance_cards
 from octop_harness.teams.util import (
     PeerInvokeMode,
@@ -25,12 +27,55 @@ from octop_harness.teams.util import (
 
 if TYPE_CHECKING:
     from octop_harness.registry import AgentEntry
+    from octop_harness.teams.inbox import PeerResult
     from octop_harness.teams.profile import Language
     from octop_harness.teams.team_manager import TeamManager
 
 
-class AskAgentInput(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+class _DispatchInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", strict=True)
+    # An Any payload avoids exposing ToolRuntime's stores/callbacks as JSON
+    # schema. Both markers keep this field hidden and injected by ToolNode.
+    runtime: Annotated[Any, InjectedToolArg, ToolRuntime] = None
+    target_policy: TargetPolicy = Field(
+        default="member_default",
+        description=(
+            "member_default: use the expert's configured device (default). "
+            "inherit: explicitly use the caller's current execution device. "
+            "explicit: request device_id or target_kind=local for this invocation. "
+            "The host authorizes the request; inspect resolved_target in the receipt for the actual device."
+        ),
+    )
+    device_id: str | None = Field(default=None, description="Requested device ID when target_policy=explicit")
+    target_kind: Literal["device", "local"] | None = Field(default=None, description="Explicit device or local target")
+    working_dir: str | None = Field(default=None, description="Requested working directory for an explicit target")
+    resource_ids: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description="Up to 32 unique registered resource IDs to request for this invocation; no paths or owner claims",
+    )
+    retry_of: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Explicit new attempt linked to a previous invocation; the host validates retry authority",
+    )
+
+    @model_validator(mode="after")
+    def validate_dispatch(self) -> _DispatchInput:
+        if self.runtime is not None and not isinstance(self.runtime, ToolRuntime):
+            raise ValueError("runtime must be supplied by the tool execution host")
+        DispatchOptions(
+            target_policy=self.target_policy,
+            device_id=self.device_id,
+            target_kind=self.target_kind,
+            working_dir=self.working_dir,
+            resource_ids=tuple(self.resource_ids),
+        )
+        return self
+
+
+class AskAgentInput(_DispatchInput):
     expert: str = Field(
         validation_alias=AliasChoices("expert", "agent"),
         description="Target expert name or short id",
@@ -50,8 +95,7 @@ class AskAgentInput(BaseModel):
     )
 
 
-class AskAgentSyncInput(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+class AskAgentSyncInput(_DispatchInput):
     expert: str = Field(
         validation_alias=AliasChoices("expert", "agent"),
         description="Target expert name or short id",
@@ -59,8 +103,7 @@ class AskAgentSyncInput(BaseModel):
     message: str = Field(description="Task or question for the target expert")
 
 
-class AskAgentAsyncInput(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+class AskAgentAsyncInput(_DispatchInput):
     expert: str = Field(
         validation_alias=AliasChoices("expert", "agent"),
         description="Target expert name or short id",
@@ -96,6 +139,19 @@ def _ok(data: Any) -> str:
 
 def _err(exc: BaseException) -> str:
     return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+def _peer_payload(peer: PeerResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {"mode": peer.mode, "agent_id": peer.agent_id, "name": peer.name}
+    for key in ("job_id", "thread_id", "response", "status", "message", "invocation_id"):
+        value = getattr(peer, key)
+        if value is not None and (value != "" or key == "response"):
+            payload[key] = value
+    if peer.job_id:
+        payload["short_id"] = peer.job_id[-6:]
+    if peer.receipt is not None:
+        payload["dispatch_receipt"] = peer.receipt.to_dict()
+    return payload
 
 
 def _use_async_invoke(
@@ -134,6 +190,17 @@ def _agent_list_item(
     cards = peer_guidance_cards(meta, language)
     if cards:
         item["guidance_cards"] = cards
+    # Host-enriched execution defaults are private owner data, including for
+    # shared text-only experts. Missing request identity fails closed.
+    item.update(default_target=None, model_ref=None)
+    owner = meta.get("octop_owner_user_id", meta.get("user_id"))
+    try:
+        viewer = (get_config().get("configurable") or {}).get("user")
+    except RuntimeError:
+        viewer = None
+    if owner is not None and viewer is not None and str(owner) == str(viewer):
+        item["default_target"] = meta.get("default_target")
+        item["model_ref"] = meta.get("model_ref")
     return item
 
 
@@ -163,20 +230,35 @@ def build_team_tools(
         message: str,
         mode: Literal["sync", "background"] = "sync",
         user_question: str | None = None,
+        target_policy: TargetPolicy = "member_default",
+        device_id: str | None = None,
+        target_kind: Literal["device", "local"] | None = None,
+        working_dir: str | None = None,
+        resource_ids: list[str] | None = None,
+        retry_of: str | None = None,
+        runtime: ToolRuntime[Any, Any] | None = None,
     ) -> str:
         try:
+            dispatch_options = DispatchOptions(
+                target_policy=target_policy,
+                device_id=device_id,
+                target_kind=target_kind,
+                working_dir=working_dir,
+                resource_ids=tuple(resource_ids or ()),
+            )
             from_agent_id, user_id, session_key, thread_id = _tool_ctx()
             entry = team.resolve_peer(user_id, expert, exclude_agent_id=from_agent_id)
             if entry is None:
                 return _ok({"error": f"expert not found: {expert}"})
 
             configured = team.peer_invoke_mode_for(from_agent_id) or peer_invoke_mode
-            forced = clamp_peer_invoke_mode(_request_peer_invoke_mode(), configured)
+            surface = clamp_peer_invoke_mode(peer_invoke_mode, configured)
+            forced = clamp_peer_invoke_mode(_request_peer_invoke_mode(), surface)
             use_async = _use_async_invoke(forced, mode, team.enabled)
             if use_async and not team.enabled:
                 return _ok({"error": "async peer invoke is not enabled"})
             if use_async:
-                peer = team.submit_peer(
+                peer = await team.asubmit_peer(
                     from_agent_id=from_agent_id,
                     to_agent_id=entry.agent_id,
                     message=message,
@@ -184,6 +266,9 @@ def build_team_tools(
                     source_thread_id=thread_id,
                     original_user_prompt=user_question,
                     metadata={"session_key": session_key} if session_key else None,
+                    dispatch_options=dispatch_options,
+                    invocation_key=runtime.tool_call_id if runtime else None,
+                    retry_of=retry_of,
                 )
             else:
                 peer = await team.call_peer(
@@ -193,21 +278,20 @@ def build_team_tools(
                     user_id=user_id,
                     source_thread_id=thread_id,
                     session_key=session_key,
+                    dispatch_options=dispatch_options,
+                    invocation_key=runtime.tool_call_id if runtime else None,
+                    retry_of=retry_of,
                 )
 
-            payload: dict[str, Any] = {"mode": peer.mode, "agent_id": peer.agent_id, "name": peer.name}
-            if peer.job_id:
-                payload["job_id"] = peer.job_id
-                payload["short_id"] = peer.job_id[-6:]
-            if peer.thread_id:
-                payload["thread_id"] = peer.thread_id
-            if peer.response is not None:
-                payload["response"] = peer.response
-            if peer.status:
-                payload["status"] = peer.status
-            if peer.message:
-                payload["message"] = peer.message
-            return _ok(payload)
+            return _ok(_peer_payload(peer))
+        except PeerDispatchError as exc:
+            return _ok(
+                {
+                    "error": str(exc),
+                    "invocation_id": exc.receipt.invocation_id,
+                    "dispatch_receipt": exc.receipt.to_dict(),
+                }
+            )
         except DEFENSIVE_OP_ERRORS as exc:
             return _err(exc)
 

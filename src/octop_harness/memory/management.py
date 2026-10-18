@@ -7,6 +7,9 @@ evidence is excluded from model recall instead of rewriting conversations.
 from __future__ import annotations
 
 import json
+import sqlite3
+import time
+from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,6 +22,32 @@ if TYPE_CHECKING:
     from octop_memory.types import AtomCard
 
 _PREFIX = "harness.memory_correction.v1:"
+
+
+def is_memory_busy(exc: BaseException) -> bool:
+    """SQLite busy/snapshot conflicts are retryable; other storage failures are not."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", 0)
+    return (code & 0xFF) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or str(exc).lower() in {
+        "database is locked",
+        "database table is locked",
+    }
+
+
+def _retry_correction(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    # A stale WAL read snapshot cannot be promoted to a writer even with a
+    # busy_timeout. Roll back and re-read the exact-content precondition on
+    # every attempt, rather than retrying only save_atom inside the old txn.
+    delays = (0.02, 0.05, 0.1, 0.2)
+    for attempt in range(len(delays) + 1):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not is_memory_busy(exc) or attempt == len(delays):
+                raise
+            time.sleep(delays[attempt])
+    raise AssertionError("unreachable")
 
 
 class _MemoryManagement:
@@ -89,24 +118,36 @@ class _MemoryManagement:
     def update(self, path: str, content: str, *, expected_content: str, reason: str) -> dict[str, Any]:
         content = self._text(content, "content")
         reason = self._text(reason, "reason", 2000)
-        with self.memory.backend.transaction():
-            old = self._atom(path, expected_content)
-            new = self.memory.replace_atom(old.id, assertion=content, actor="auto", note=reason)
-            if new is None:
-                raise ValueError("Fact was retired concurrently; search current facts again")
-            if new.id != old.id:
-                self._retire_sources(old)
-                self.memory.set_meta(_PREFIX + "successor:" + new.id, old.id)
-        return {"status": "unchanged" if new.id == old.id else "replaced", "previous_path": path, **self._record(new)}
+
+        def attempt() -> dict[str, Any]:
+            with self.memory.backend.transaction():
+                old = self._atom(path, expected_content)
+                new = self.memory.replace_atom(old.id, assertion=content, actor="auto", note=reason)
+                if new is None:
+                    raise ValueError("Fact was retired concurrently; search current facts again")
+                if new.id != old.id:
+                    self._retire_sources(old)
+                    self.memory.set_meta(_PREFIX + "successor:" + new.id, old.id)
+            return {
+                "status": "unchanged" if new.id == old.id else "replaced",
+                "previous_path": path,
+                **self._record(new),
+            }
+
+        return _retry_correction(attempt)
 
     def delete(self, path: str, *, expected_content: str, reason: str) -> dict[str, Any]:
         reason = self._text(reason, "reason", 2000)
-        with self.memory.backend.transaction():
-            old = self._atom(path, expected_content)
-            if not self.memory.deprecate_atom(old.id, actor="auto", note=reason):
-                raise ValueError("Fact was retired concurrently; search current facts again")
-            self._retire_sources(old)
-        return {"status": "deprecated", "path": path, "history_preserved": True}
+
+        def attempt() -> dict[str, Any]:
+            with self.memory.backend.transaction():
+                old = self._atom(path, expected_content)
+                if not self.memory.deprecate_atom(old.id, actor="auto", note=reason):
+                    raise ValueError("Fact was retired concurrently; search current facts again")
+                self._retire_sources(old)
+            return {"status": "deprecated", "path": path, "history_preserved": True}
+
+        return _retry_correction(attempt)
 
     def blocked(self, kind: str, source_id: str) -> str | None:
         if kind == "atom":

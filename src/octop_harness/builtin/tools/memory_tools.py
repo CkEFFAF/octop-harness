@@ -15,6 +15,7 @@ crashing the agent turn or leaking a stack trace into the conversation.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -99,7 +100,7 @@ def build_memory_tools(service: MemoryService) -> list[StructuredTool]:
     def manage(action: str, **kwargs: object) -> str:
         # Import only when a tool runs: memory.__init__ also exposes the
         # runtime that imports this module during graph construction.
-        from octop_harness.memory.management import _management_result
+        from octop_harness.memory.management import _management_result, is_memory_busy
 
         try:
             return _management_result(service, action, **kwargs)
@@ -107,7 +108,18 @@ def build_memory_tools(service: MemoryService) -> list[StructuredTool]:
             return f"memory_{action} error: {exc}"
         except Exception as exc:  # pragma: no cover - storage fault; pylint: disable=broad-except
             logger.warning("memory_%s failed", action, exc_info=True)
-            return f"memory_{action} failed: {exc.__class__.__name__}"
+            busy = is_memory_busy(exc)
+            return json.dumps(
+                {
+                    "status": "error",
+                    "code": "MEMORY_BUSY" if busy else "MEMORY_STORAGE_ERROR",
+                    "retryable": busy,
+                    "error": f"memory_{action} failed: {exc.__class__.__name__}",
+                    "next_action": "Read the current fact and retry the correction; do not create a duplicate fact."
+                    if busy
+                    else "Inspect the storage error before retrying.",
+                }
+            )
 
     @tool
     def memory_list(query: str = "", limit: int = 20) -> str:

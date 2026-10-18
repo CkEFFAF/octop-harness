@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from octop_harness.teams.dispatch import DispatchOptions, DispatchReceipt, PeerDispatchError
 from octop_harness.teams.inbox import (
     HarnessAgentInboxManager,
     InboxMessage,
@@ -25,10 +26,13 @@ from octop_harness.teams.util import (
 
 __all__ = [
     "AskAgentInput",
+    "DispatchOptions",
+    "DispatchReceipt",
     "HarnessAgentInboxManager",
     "InboxMessage",
     "InboxStatus",
     "PeerCall",
+    "PeerDispatchError",
     "PeerResult",
     "PeerSession",
     "ReplyEvent",
